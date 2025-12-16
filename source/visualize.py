@@ -1,9 +1,9 @@
 """
-visualize.py - MSDFM/IDSSM 모델 성능 비교 및 GAT Attention 시각화 모듈
+visualize.py - MSDFM/ID-SSM 모델 성능 비교 및 GAT Attention 시각화 모듈
 
 제공 함수:
-1. plot_mean_are_comparison: MSDFM, IDSSM 모델의 Mean ARE(%) 비교
-2. plot_variance_are_comparison: MSDFM, IDSSM 모델의 Variance ARE(%) 비교
+1. plot_mean_are_comparison: MSDFM, ID-SSM 모델의 Mean ARE(%) 비교
+2. plot_variance_are_comparison: MSDFM, ID-SSM 모델의 Variance ARE(%) 비교
 3. plot_gat_attention_heatmap: GAT Attention weights heatmap 시각화
 """
 
@@ -409,12 +409,12 @@ def plot_gat_attention_multi_sample(attention_weights_list, sensor_names=None,
 
 def extract_gat_attention(model, x_sensors):
     """
-    IDSSM 모델에서 GAT attention weights 추출
+    ID-SSM 모델에서 GAT attention weights 추출
 
     Parameters:
     -----------
     model : IDSSM
-        학습된 IDSSM 모델
+        학습된 ID-SSM 모델
     x_sensors : torch.Tensor
         입력 센서 데이터. Shape: (batch_size, num_sensors)
 
@@ -449,7 +449,7 @@ def plot_combined_are_comparison(
     msdfm_results_df : pd.DataFrame
         MSDFM 모델 결과
     idssm_results_df : pd.DataFrame
-        IDSSM 모델 결과
+        ID-SSM 모델 결과
     save_dir : str, optional
         저장 디렉토리
     figsize : tuple
@@ -475,7 +475,7 @@ def plot_combined_are_comparison(
     # ax1.bar(x - width/2, msdfm_stats['Mean_ARE'].values, width,
     #         label='MSDFM', color='#3498db', alpha=0.8, edgecolor='black')
     # ax1.bar(x + width/2, idssm_stats['Mean_ARE'].values, width,
-    #         label='IDSSM', color='#e74c3c', alpha=0.8, edgecolor='black')
+    #         label='ID-SSM', color='#e74c3c', alpha=0.8, edgecolor='black')
 
     ax1.plot(x - width/2, msdfm_stats['Mean_ARE'].values, 'o-', color='#2980b9', linewidth=2)
     ax1.plot(x + width/2, idssm_stats['Mean_ARE'].values, 's-', color='#c0392b', linewidth=2)
@@ -496,7 +496,7 @@ def plot_combined_are_comparison(
     # ax2.bar(x - width/2, msdfm_var, width,
     #         label='MSDFM', color='#9b59b6', alpha=0.8, edgecolor='black')
     # ax2.bar(x + width/2, idssm_var, width,
-    #         label='IDSSM', color='#f39c12', alpha=0.8, edgecolor='black')
+    #         label='ID-SSM', color='#f39c12', alpha=0.8, edgecolor='black')
 
     ax2.plot(x - width/2, msdfm_var, 'o-', color='#8e44ad', linewidth=2)
     ax2.plot(x + width/2, idssm_var, 's-', color='#d68910', linewidth=2)
@@ -509,7 +509,7 @@ def plot_combined_are_comparison(
     ax2.legend(fontsize=10)
     ax2.grid(True, linestyle='--', alpha=0.5, axis='y')
 
-    plt.suptitle('MSDFM vs IDSSM Performance Comparison', fontsize=14, fontweight='bold', y=1.02)
+    plt.suptitle('MSDFM vs ID-SSM Performance Comparison', fontsize=14, fontweight='bold', y=1.02)
     plt.tight_layout()
 
     # 저장
