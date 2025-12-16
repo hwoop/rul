@@ -1,8 +1,7 @@
-# sensor_selection.py
 import numpy as np
 import pandas as pd
 from particle_filter import ParticleFilter
-from config import Config
+
 
 def calculate_ware(y_true, y_pred, time_indices):
     rul_true = y_true - time_indices
