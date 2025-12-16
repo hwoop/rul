@@ -449,7 +449,7 @@ def extract_gat_attention(model, x_sensors):
     """
     model.eval()
     with torch.no_grad():
-        z_encoded, attention_weights = model.forward_encoder(x_sensors)
+        z_encoded, attention_weights = model.encode(x_sensors)
     return z_encoded, attention_weights
 
 

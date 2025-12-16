@@ -1,6 +1,6 @@
 import numpy as np
 import pandas as pd
-from particle_filter import ParticleFilter
+from .particle_filter import ParticleFilter
 
 
 def calculate_ware(y_true, y_pred, time_indices):

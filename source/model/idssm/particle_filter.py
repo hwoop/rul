@@ -29,7 +29,7 @@ class ParticleFilterRUL:
     def update(self, z_obs, model):
         with torch.no_grad():
             x_tensor = torch.FloatTensor(self.particles[:, 0]).unsqueeze(1)
-            z_pred = model.forward_decoder(x_tensor).numpy()
+            z_pred = model.decode(x_tensor).numpy()
         
         diff = z_pred - z_obs[None, :]
         dist2 = np.sum(diff**2, axis=1)

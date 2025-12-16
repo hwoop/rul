@@ -7,12 +7,13 @@ from sklearn.metrics import mean_squared_error
 import random
 import os
 import datetime
+import time
 
 import utils
 from model import idssm, msdfm
 
 # ---------------------------------------------------------
-# 0. 시드 설정 및 데이터 로드 함수 (변경 없음)
+# 0. 시드 설정 및 데이터 로드 함수
 # ---------------------------------------------------------
 def set_seed(seed=2024):
     random.seed(seed)
@@ -31,60 +32,144 @@ def load_and_process_data(train_path, test_path, rul_path):
     test = pd.read_csv(test_path, sep='\s+', header=None, names=col_names)
     y_test = pd.read_csv(rul_path, sep='\s+', header=None, names=['RUL'])
 
+    # Calculate Max Cycles (Lifetimes) for Training Data
     train_max_cycle = train.groupby('unit_nr')['time_cycles'].max().reset_index()
     train_max_cycle.columns = ['unit_nr', 'max_cycle']
     train = train.merge(train_max_cycle, on='unit_nr', how='left')
+    
+    # Normalized State (0~1) for IDSSM
     train['state_x'] = train['time_cycles'] / train['max_cycle']
 
+    # Drop constant/uninformative sensors (based on typical C-MAPSS analysis)
     drop_sensors = ['s_1', 's_5', 's_10', 's_16', 's_18', 's_19']
     features = [c for c in train.columns if c.startswith('s_') and c not in drop_sensors]
 
+    # MinMax Scaling
     from sklearn.preprocessing import MinMaxScaler
     scaler = MinMaxScaler()
     train[features] = scaler.fit_transform(train[features])
     test[features] = scaler.transform(test[features])
 
+    # Drift Statistics for Particle Filters
+    # MSDFM needs raw lifetimes, IDSSM needs inverse rate stats
+    lifetimes = train_max_cycle['max_cycle'].values
     drift_stats = (1.0 / train_max_cycle['max_cycle']).agg(['mean', 'std']).to_dict()
     
-    return train, test, y_test, features, drift_stats
+    return train, test, y_test, features, lifetimes, drift_stats
 
 # ---------------------------------------------------------
-# 2. Main Pipeline Function
+# 1. MSDFM Pipeline (Baseline)
 # ---------------------------------------------------------
-def run_fd001_pipeline(train_path, test_path, rul_path, D_state=1.0, save_dir="results"):
+def run_msdfm_step(train_df, test_df, y_test, features, lifetimes, save_dir):
+    print("\n" + "="*50)
+    print(" [Model A] Running MSDFM Pipeline")
+    print("="*50)
     
-    set_seed(2024)
-    print(f"Results will be saved to: {save_dir}")
-
-
-    # ==========================================
-    # Model A: Baseline (MSDFM)
-    # ==========================================       
-    print("Running Baseline: MSDFM...")
-    msdfm = msdfm.MSDFM_Parameters()
-    msdfm.estimate_state_params(lifetimes)
-    msdfm.estimate_measurement_params(train_raw, feats)
+    # 1.1 Parameter Estimation
+    print("[MSDFM] Estimating Model Parameters...")
+    params = msdfm.MSDFM_Parameters() # Corrected access
+    params.estimate_state_params(lifetimes)
+    params.estimate_measurement_params(train_df, features)
     
+    # 1.2 Sensor Selection (PSGS)
+    print("[MSDFM] Running PSGS for Sensor Selection...")
+    best_sensors, ranked, group_scores, _ = msdfm.psgs_algorithm(train_df, lifetimes, params)
+    print(f"[MSDFM] Optimal Sensor Group ({len(best_sensors)}): {best_sensors}")
     
+    # Update params to use only best sensors (subset covariance)
+    indices = [params.sensor_list.index(s) for s in best_sensors]
+    params.sensor_list = best_sensors
+    params.Cov_matrix = params.Cov_matrix[np.ix_(indices, indices)]
+    
+    # 1.3 Test Evaluation
+    print("[MSDFM] Evaluating on Test Set...")
+    pred_ruls = []
+    true_ruls = y_test['RUL'].values
+    test_units = sorted(test_df['unit_nr'].unique())
+    all_results = []
+    
+    start_time = time.time()
+    
+    for i, unit_id in enumerate(test_units):
+        unit_data = test_df[test_df['unit_nr'] == unit_id]
+        X_seq = unit_data[best_sensors].values # Use best sensors
+        time_cycles = unit_data['time_cycles'].values
+        
+        if len(X_seq) == 0: continue
+            
+        final_true_rul = true_ruls[i]
+        total_life = time_cycles[-1] + final_true_rul
+        
+        # Initialize PF with the first measurement
+        pf = msdfm.particle_filter.ParticleFilter(params, best_sensors, initial_data=X_seq[0])
+        pred_rul_t = pf.estimate_rul() # Initial estimate
+        
+        # Time Step Iteration
+        for t in range(1, len(X_seq)):
+            meas = X_seq[t]
+            pf.predict()
+            pf.update(meas)
+            pf.fuzzy_resampling()
+            
+            pred_rul_t = pf.estimate_rul()
+            
+            # Record result for metrics
+            current_age = time_cycles[t]
+            are = np.abs(total_life - pred_rul_t - current_age) / total_life * 100.0
+            
+            all_results.append({
+                'unit_nr': unit_id,
+                'life_percent': (current_age / total_life) * 100,
+                'ARE': are,
+                't_nk': current_age,
+                't_nKn': total_life,
+                'Model': 'MSDFM'
+            })
+            
+        pred_ruls.append(pred_rul_t)
+        if (i+1) % 20 == 0:
+            print(f"  Processed {i+1}/{len(test_units)} units...")
+            
+    elapsed = time.time() - start_time
+    rmse = np.sqrt(mean_squared_error(true_ruls, pred_ruls))
+    
+    # Calculate WARE
+    results_df = pd.DataFrame(all_results)
+    ware_list = []
+    for unit_id, df_u in results_df.groupby('unit_nr'):
+        t_nKn = df_u['t_nKn'].iloc[0]
+        term = (df_u['t_nk'] * df_u['ARE'] / t_nKn).mean()
+        ware_list.append(term)
+    overall_ware = np.mean(ware_list)
+    
+    print(f"[MSDFM] Done in {elapsed:.2f}s | RMSE: {rmse:.4f} | WARE: {overall_ware:.2f}%")
+    
+    # Save results
+    results_df.to_csv(os.path.join(save_dir, 'msdfm_results.csv'), index=False)
+    
+    return rmse, overall_ware, results_df
 
-    # 1. 데이터 로드
-    print("Loading Data...")
-    train_df, test_df, y_test, feats, drift_stats = load_and_process_data(train_path, test_path, rul_path)
-
-    X_train = torch.FloatTensor(train_df[feats].values)
+# ---------------------------------------------------------
+# 2. IDSSM Pipeline (Proposed)
+# ---------------------------------------------------------
+def run_idssm_step(train_df, test_df, y_test, features, drift_stats, save_dir):
+    print("\n" + "="*50)
+    print(" [Model B] Running IDSSM Pipeline")
+    print("="*50)
+    
+    # Data Prep for PyTorch
+    X_train = torch.FloatTensor(train_df[features].values)
     state_train = torch.FloatTensor(train_df['state_x'].values).unsqueeze(-1)
     dataset = torch.utils.data.TensorDataset(X_train, state_train)
     dataloader = torch.utils.data.DataLoader(dataset, batch_size=64, shuffle=True)
 
-    # 2. 모델 학습
-    model = IDSSM(num_sensors=len(feats), latent_dim=8)
+    # 2.1 Model Training
+    model = idssm.models.IDSSM(num_sensors=len(features), latent_dim=8)
     optimizer = optim.Adam(model.parameters(), lr=0.005)
     criterion = nn.MSELoss()
-
-    # [수정] Loss 기록용 리스트
     loss_history = []
 
-    print("Stage 1: Training Measurement Model...")
+    print("[IDSSM] Training GAT-MNN Network...")
     model.train()
     for epoch in range(50): 
         epoch_loss = 0
@@ -96,48 +181,40 @@ def run_fd001_pipeline(train_path, test_path, rul_path, D_state=1.0, save_dir="r
             optimizer.step()
             epoch_loss += loss.item()
         
-        # [수정] Epoch Loss 저장
         avg_loss = epoch_loss / len(dataloader)
         loss_history.append(avg_loss)
-
         if (epoch+1) % 10 == 0:
-            print(f"Epoch {epoch+1}: Loss = {avg_loss:.6f}")
+            print(f"  Epoch {epoch+1}: Loss = {avg_loss:.6f}")
 
-    # Measurement Noise 추정
+    # 2.2 Noise Estimation
     model.eval()
     with torch.no_grad():
         z_enc_full, z_dec_full = model(X_train, state_train)
         residuals = z_enc_full - z_dec_full
-
     err_norm = torch.norm(residuals, dim=1)
     meas_noise_std = err_norm.median().item()
-    meas_noise_std = max(meas_noise_std, 1e-3)
-    
-    NOISE_SCALE_FACTOR = 5.0 
-    meas_noise_std_robust = meas_noise_std * NOISE_SCALE_FACTOR
-    print(f"Robust PF Noise Std: {meas_noise_std_robust:.6f}")
+    meas_noise_std_robust = max(meas_noise_std, 1e-3) * 5.0
+    print(f"[IDSSM] Estimated Noise Std: {meas_noise_std_robust:.6f}")
 
-    # 3. 추론 및 분석 (Stage 2)
-    print("\nStage 2: Conducting Lifetime Performance Analysis...")
-
+    # 2.3 Test Evaluation
+    print("[IDSSM] Conducting Lifetime Performance Analysis...")
     all_results = [] 
     pred_ruls = []   
     true_ruls = y_test['RUL'].values 
     test_units = sorted(test_df['unit_nr'].unique())
-    
-    # [수정] Unit별 최종 결과 저장용 리스트 (Unit ID, Actual RUL, Pred RUL)
     final_unit_predictions = []
+    
+    start_time = time.time()
 
     for i, unit_id in enumerate(test_units):
         unit_data = test_df[test_df['unit_nr'] == unit_id]
-        X_seq = unit_data[feats].values
+        X_seq = unit_data[features].values
         time_cycles = unit_data['time_cycles'].values
         
         final_true_rul = true_ruls[i]
-        max_cycle_observed = time_cycles[-1]
-        total_life = max_cycle_observed + final_true_rul
+        total_life = time_cycles[-1] + final_true_rul
         
-        pf = ParticleFilterRUL(5000, drift_stats['mean'], drift_stats['std'], meas_noise_std_robust)
+        pf = idssm.ParticleFilterRUL(5000, drift_stats['mean'], drift_stats['std'], meas_noise_std_robust)
         pf.initialize()
         
         for t in range(len(X_seq)):
@@ -145,45 +222,40 @@ def run_fd001_pipeline(train_path, test_path, rul_path, D_state=1.0, save_dir="r
 
             x_obs = torch.FloatTensor(X_seq[t]).unsqueeze(0)
             with torch.no_grad():
-                z_out, _ = model.forward_encoder(x_obs)
+                z_out, _ = model.encode(x_obs)
                 z_obs = z_out.numpy().flatten()
 
             pf.update(z_obs, model)
-
-            if pf.neff() < pf.N / 2:
-                pf.resample()
+            if pf.neff() < pf.N / 2: pf.resample()
             
             pred_rul_t = pf.estimate_rul(time_cycles[t])
-            pred_rul_t = min(pred_rul_t, 145.0) 
+            pred_rul_t = min(pred_rul_t, 145.0) # Cap for stability
 
             current_age = time_cycles[t]
-            life_percent = (current_age / total_life) * 100 
             are = np.abs(total_life - pred_rul_t - current_age) / total_life * 100.0
                 
             all_results.append({
                 'unit_nr': unit_id,
-                'life_percent': life_percent,
+                'life_percent': (current_age / total_life) * 100,
                 'ARE': are,
                 't_nk': current_age,
-                't_nKn': total_life
+                't_nKn': total_life,
+                'Model': 'IDSSM'
             })
             
-            # 마지막 시점
             if t == len(X_seq) - 1:
                 pred_ruls.append(pred_rul_t)
-                # [수정] 리스트에 추가
                 final_unit_predictions.append((unit_id, final_true_rul, pred_rul_t))
-                print(f"Unit {unit_id:<5} (Actual RUL : {int(final_true_rul):<3}, Pred RUL : {pred_rul_t:.2f})")
 
         if (i+1) % 20 == 0:
-            print(f"Processed {i+1}/{len(test_units)} units...")
+            print(f"  Processed {i+1}/{len(test_units)} units...")
+            
+    elapsed = time.time() - start_time
 
-    # 결과 집계
+    # Results Aggregation
     results_df = pd.DataFrame(all_results)
-    
     ware_list = []
     for unit_id, df_u in results_df.groupby('unit_nr'):
-        Kn = len(df_u)
         t_nKn = df_u['t_nKn'].iloc[0]
         term = (df_u['t_nk'] * df_u['ARE'] / t_nKn).mean()
         ware_list.append(term)
@@ -191,48 +263,74 @@ def run_fd001_pipeline(train_path, test_path, rul_path, D_state=1.0, save_dir="r
     overall_ware = np.mean(ware_list)
     rmse = np.sqrt(mean_squared_error(true_ruls, pred_ruls))
 
-    print("\n" + "="*50)
-    print(f" Final Performance Summary")
-    print("="*50)
-    print(f" Test RMSE : {rmse:.4f}")
-    print(f" Mean ARE (WARE) : {overall_ware:.2f}%")
-    print("="*50)
+    print(f"[IDSSM] Done in {elapsed:.2f}s | RMSE: {rmse:.4f} | WARE: {overall_ware:.2f}%")
 
-    # 4. 결과 저장 및 시각화 (Utils 호출)
-    print("\nSaving Results...")
-    results_df.to_csv(os.path.join(save_dir, 'all_results.csv'), index=False)
-
-    # 기존 그래프
-    utils.plot_lifetime_performance(results_df, save_dir)
-    utils.plot_rul_comparison(true_ruls, pred_ruls, rmse, save_dir)
-
-    # [추가된 기능 호출]
-    # 1. Loss 그래프
+    # Saving artifacts
+    results_df.to_csv(os.path.join(save_dir, 'idssm_results.csv'), index=False)
     utils.plot_training_loss(loss_history, save_dir)
-    
-    # 2. Unit별 RUL txt 저장
     utils.save_unit_predictions(final_unit_predictions, rmse, overall_ware, save_dir)
-    
-    # 3. Percentile 통계 txt 저장
     utils.save_percentile_stats(results_df, save_dir)
+    utils.plot_lifetime_performance(results_df, save_dir) # Saves as corrected png
+    utils.plot_rul_comparison(true_ruls, pred_ruls, rmse, save_dir)
+    
+    return rmse, overall_ware, results_df
 
-    return results_df
+# ---------------------------------------------------------
+# 3. Main Execution
+# ---------------------------------------------------------
+def run_full_experiment(train_path, test_path, rul_path, save_dir):
+    set_seed(2024)
+    if not os.path.exists(save_dir): os.makedirs(save_dir)
+    print(f"Experiment Results will be saved to: {save_dir}")
 
-def save_results():
+    # 1. Load Data
+    print("Loading and Processing Data...")
+    train, test, y_test, feats, lifetimes, drift = load_and_process_data(train_path, test_path, rul_path)
+    
+    # 3. Run IDSSM
+    try:
+        rmse_b, ware_b, res_b = run_idssm_step(train, test, y_test, feats, drift, save_dir)
+    except Exception as e:
+        print(f"[IDSSM] Failed: {e}")
+        import traceback
+        traceback.print_exc()
+        rmse_b, ware_b = float('nan'), float('nan')
+
+    # 2. Run MSDFM
+    try:
+        rmse_a, ware_a, res_a = run_msdfm_step(train, test, y_test, feats, lifetimes, save_dir)
+    except Exception as e:
+        print(f"[MSDFM] Failed: {e}")
+        import traceback
+        traceback.print_exc()
+        rmse_a, ware_a = float('nan'), float('nan')
+        
+    # 4. Final Comparison
+    print("\n" + "="*50)
+    print(" FINAL COMPARISON SUMMARY")
+    print("="*50)
+    print(f"{'Model':<10} | {'RMSE':<10} | {'WARE (%)':<10}")
+    print("-" * 36)
+    print(f"{'MSDFM':<10} | {rmse_a:<10.4f} | {ware_a:<10.2f}")
+    print(f"{'IDSSM':<10} | {rmse_b:<10.4f} | {ware_b:<10.2f}")
+    print("="*50)
+    
+    # Save comparison text
+    with open(os.path.join(save_dir, 'final_comparison.txt'), 'w') as f:
+        f.write("FINAL COMPARISON SUMMARY\n")
+        f.write(f"Model  | RMSE       | WARE (%)\n")
+        f.write(f"MSDFM  | {rmse_a:.4f}     | {ware_a:.2f}\n")
+        f.write(f"IDSSM  | {rmse_b:.4f}     | {ware_b:.2f}\n")
+
+def save_results_dir():
     id = datetime.datetime.now().strftime("%d%m%Y_%H%M%S")
     save_path = f"results/{id}"
-    
-    if not os.path.exists(save_path):
-        os.makedirs(save_path)
-    
     return save_path
 
-
 if __name__ == "__main__":
-    results = run_fd001_pipeline(
+    run_full_experiment(
         train_path="./data/train_FD001.txt",
         test_path="./data/test_FD001.txt",
         rul_path="./data/RUL_FD001.txt",
-        D_state=1.0,
-        save_dir=save_results()
+        save_dir=save_results_dir()
     )

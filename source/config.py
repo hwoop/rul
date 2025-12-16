@@ -1,15 +1,8 @@
-# config.py 수정
-
 class Config:
     # ================================================================
     # PARTICLE FILTER PARAMETERS (Increased for stability)
     # ================================================================
-    NUM_PARTICLES = 5000  # Increased from 1000
-    
-    # Dataset Config
-    DATASET_PATH = 'data/train_FD001.txt'
-    TEST_PATH = 'data/test_FD001.txt'
-    RUL_PATH = 'data/RUL_FD001.txt'
+    NUM_PARTICLES = 1000  # Increased from 1000
     
     # Model Config
     FAILURE_THRESHOLD = 1.0
