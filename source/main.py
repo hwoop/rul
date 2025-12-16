@@ -10,6 +10,7 @@ import datetime
 import time
 
 import utils
+import visualize
 from model import idssm, msdfm
 
 # ---------------------------------------------------------
@@ -289,7 +290,7 @@ def run_full_experiment(train_path, test_path, rul_path, save_dir):
     
     # 3. Run IDSSM
     try:
-        rmse_b, ware_b, res_b = run_idssm_step(train, test, y_test, feats, drift, save_dir)
+        rmse_b, ware_b, res_b = run_idssm_step(train, test, y_test, feats, drift, f'{save_dir}/idssm')
     except Exception as e:
         print(f"[IDSSM] Failed: {e}")
         import traceback
@@ -298,7 +299,7 @@ def run_full_experiment(train_path, test_path, rul_path, save_dir):
 
     # 2. Run MSDFM
     try:
-        rmse_a, ware_a, res_a = run_msdfm_step(train, test, y_test, feats, lifetimes, save_dir)
+        rmse_a, ware_a, res_a = run_msdfm_step(train, test, y_test, feats, lifetimes, f'{save_dir}/msdfm')
     except Exception as e:
         print(f"[MSDFM] Failed: {e}")
         import traceback
