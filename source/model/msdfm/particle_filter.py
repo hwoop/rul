@@ -84,6 +84,9 @@ class ParticleFilter:
             p = self.params.sensor_params[sensor]
             y_meas = measurement_vector[i]
             
+            if abs(p['a']) < 1e-9:
+                continue
+            
             try:
                 val = (y_meas - p['b']) / p['a']
                 if val > 0 and p['c'] > 0:

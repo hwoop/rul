@@ -290,7 +290,7 @@ def plot_gat_attention_heatmap(
     if title_suffix:
         title += f' ({title_suffix})'
     ax.set_title(title, fontsize=14, fontweight='bold', pad=20)
-    ax.set_ylabel('Target Sensor (i)', fontsize=12, fontweight='bold')
+    ax.set_ylabel('Target Sensor (i)', fontsize=12, fontweight='bold') 
     ax.set_xlabel('Source Sensor (j)', fontsize=12, fontweight='bold')
 
     # 틱 레이블 회전
