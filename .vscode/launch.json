@@ -1,0 +1,19 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Execute current scripts",
+            "type": "debugpy",
+            "request": "launch",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "program": "${file}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/source;${workspaceFolder}/scripts;${workspaceFolder}/analysis;${workspaceFolder}/submodules;${workspaceFolder}/submodules/mimic3_benchmarks;${workspaceFolder}/submodules/mimic-sparql;${workspaceFolder}/scripts/test",
+            },
+        },
+    ]
+}
