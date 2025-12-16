@@ -41,7 +41,10 @@ class IDSSM(nn.Module):
     def __init__(self, num_sensors, latent_dim=8):
         super(IDSSM, self).__init__()
         self.gat = GATLayer(in_dim=1, out_dim=latent_dim)
-        self.pooling = nn.Sequential(nn.Linear(latent_dim, 1), nn.Softmax(dim=1))
+        self.pooling = nn.Sequential(
+            nn.Linear(latent_dim, 1), 
+            nn.Softmax(dim=1)
+        )
         self.mnn = nn.Sequential(
             MonotonicLinear(1, 16),
             nn.Tanh(),

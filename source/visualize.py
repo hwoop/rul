@@ -48,74 +48,68 @@ def _compute_are_statistics(results_df, bin_range=(10, 90)):
     return bin_stats
 
 
-def plot_mean_are_comparison(msdfm_results_df, idssm_results_df, save_dir=None,
-                              figsize=(12, 7), show_plot=True):
+def plot_mean_are_comparison(results_dfs, labels, save_dir=None, figsize=(12, 7), show_plot=True):
     """
-    MSDFM과 IDSSM 모델의 Mean ARE(%) 비교 시각화
+    여러 모델의 Mean ARE(%)를 논문(MSDFM Paper) 수치와 비교하여 Line Plot으로 시각화.
 
     Parameters:
     -----------
-    msdfm_results_df : pd.DataFrame
-        MSDFM 모델의 결과 데이터프레임 (life_percent, ARE 컬럼 필요)
-    idssm_results_df : pd.DataFrame
-        IDSSM 모델의 결과 데이터프레임 (life_percent, ARE 컬럼 필요)
+    results_dfs : list of pd.DataFrame
+        비교할 모델들의 결과 데이터프레임 리스트 (각 df는 life_percent, ARE 컬럼 필요)
+    labels : list of str
+        각 모델의 라벨 리스트 (results_dfs와 길이가 같아야 함)
     save_dir : str, optional
         저장 디렉토리 경로. None이면 저장하지 않음
     figsize : tuple
-        그래프 크기 (기본값: (12, 7))
+        그래프 크기
     show_plot : bool
-        플롯 표시 여부 (기본값: True)
-
-    Returns:
-    --------
-    tuple
-        (fig, ax) matplotlib figure와 axis 객체
+        플롯 표시 여부
     """
-    # ARE 통계 계산
-    msdfm_stats = _compute_are_statistics(msdfm_results_df)
-    idssm_stats = _compute_are_statistics(idssm_results_df)
+    # 1. 논문 하드코딩 데이터 (Paper)
+    paper_percentiles = np.array([10, 20, 30, 40, 50, 60, 70, 80, 90])
+    paper_mean_are = np.array([16.3, 17.1, 14.6, 8.8, 6.3, 4.2, 3.5, 2.5, 2.0])
 
-    # 그래프 생성
     fig, ax = plt.subplots(figsize=figsize)
 
-    x = np.arange(len(msdfm_stats))
-    width = 0.35
+    # 2. Paper Data Plot (기본 비교군: 회색 점선)
+    ax.plot(paper_percentiles, paper_mean_are, 'o--', color='gray', label='MSDFM(Paper)',
+            linewidth=2, alpha=0.6, markersize=6)
+    
+    # Paper 값 주석 (약간 아래쪽)
+    for x, y in zip(paper_percentiles, paper_mean_are):
+        ax.annotate(f'{y}', (x, y), textcoords="offset points", xytext=(0, -15), 
+                    ha='center', fontsize=8, color='gray')
 
-    # 막대 그래프
-    bars1 = ax.bar(x - width/2, msdfm_stats['Mean_ARE'].values, width,
-                   label='MSDFM', color='#3498db', alpha=0.8, edgecolor='black')
-    bars2 = ax.bar(x + width/2, idssm_stats['Mean_ARE'].values, width,
-                   label='IDSSM', color='#e74c3c', alpha=0.8, edgecolor='black')
+    # 3. 모델별 데이터 Plot
+    # 색상 팔레트 생성 (모델 개수에 맞춰 자동 할당)
+    colors = plt.cm.tab10(np.linspace(0, 1, len(results_dfs)))
 
-    # 선 그래프 오버레이
-    ax.plot(x - width/2, msdfm_stats['Mean_ARE'].values, 'o-',
-            color='#2980b9', linewidth=2, markersize=8)
-    ax.plot(x + width/2, idssm_stats['Mean_ARE'].values, 's-',
-            color='#c0392b', linewidth=2, markersize=8)
+    for i, (df, label) in enumerate(zip(results_dfs, labels)):
+        # 통계 계산 (_compute_are_statistics는 기존 visualize.py 함수 활용)
+        stats = _compute_are_statistics(df, bin_range=(10, 90))
+        
+        # 결측 구간(bin)이 있을 수 있으므로 Paper Percentile 기준으로 병합
+        base_df = pd.DataFrame({'Percentile': paper_percentiles})
+        stats['Percentile'] = stats['Percentile'].astype(int)
+        merged = pd.merge(base_df, stats, on='Percentile', how='left')
+        
+        # Line Plot
+        ax.plot(merged['Percentile'], merged['Mean_ARE'], 's-', label=label,
+                color=colors[i], linewidth=2.5, markersize=8)
 
-    # 축 설정
+        # 값 주석 (모델 값)
+        for x, y in zip(merged['Percentile'], merged['Mean_ARE']):
+            if not np.isnan(y):
+                ax.annotate(f'{y:.1f}', (x, y), textcoords="offset points", xytext=(0, 8), 
+                            ha='center', fontsize=9, fontweight='bold', color=colors[i])
+
+    # 축 및 스타일 설정
     ax.set_xlabel('Life Percentile (%)', fontsize=12, fontweight='bold')
     ax.set_ylabel('Mean ARE (%)', fontsize=12, fontweight='bold')
-    ax.set_title('Mean ARE Comparison: MSDFM vs IDSSM', fontsize=14, fontweight='bold')
-    ax.set_xticks(x)
-    ax.set_xticklabels(msdfm_stats['Percentile'].astype(int).values)
-    ax.legend(fontsize=11, loc='upper left')
-    ax.grid(True, linestyle='--', alpha=0.5, axis='y')
-
-    # 막대 위에 값 표시
-    for bar in bars1:
-        height = bar.get_height()
-        ax.annotate(f'{height:.1f}',
-                    xy=(bar.get_x() + bar.get_width() / 2, height),
-                    xytext=(0, 3), textcoords="offset points",
-                    ha='center', va='bottom', fontsize=8)
-
-    for bar in bars2:
-        height = bar.get_height()
-        ax.annotate(f'{height:.1f}',
-                    xy=(bar.get_x() + bar.get_width() / 2, height),
-                    xytext=(0, 3), textcoords="offset points",
-                    ha='center', va='bottom', fontsize=8)
+    ax.set_title('Mean ARE Comparison', fontsize=14, fontweight='bold')
+    ax.set_xticks(paper_percentiles)
+    ax.legend(fontsize=11)
+    ax.grid(True, linestyle='--', alpha=0.5)
 
     plt.tight_layout()
 
@@ -123,7 +117,7 @@ def plot_mean_are_comparison(msdfm_results_df, idssm_results_df, save_dir=None,
     if save_dir:
         if not os.path.exists(save_dir):
             os.makedirs(save_dir)
-        save_path = os.path.join(save_dir, 'mean_are_comparison.png')
+        save_path = os.path.join(save_dir, 'mean_are_comparison_multi.png')
         plt.savefig(save_path, dpi=300, bbox_inches='tight')
         print(f"[Saved] Mean ARE comparison plot saved to: {save_path}")
 
@@ -135,87 +129,70 @@ def plot_mean_are_comparison(msdfm_results_df, idssm_results_df, save_dir=None,
     return fig, ax
 
 
-def plot_variance_are_comparison(msdfm_results_df, idssm_results_df, save_dir=None,
-                                  figsize=(12, 7), show_plot=True, use_ratio=True):
+def plot_variance_are_comparison(results_dfs, labels, save_dir=None, figsize=(12, 7), show_plot=True):
     """
-    MSDFM과 IDSSM 모델의 Variance ARE(%) 비교 시각화
+    여러 모델의 Variance of ARE를 논문(MSDFM Paper) 수치와 비교 시각화.
+    Y축은 10^-3 스케일로 표시 (값에 1000을 곱함).
 
     Parameters:
     -----------
-    msdfm_results_df : pd.DataFrame
-        MSDFM 모델의 결과 데이터프레임 (life_percent, ARE 컬럼 필요)
-    idssm_results_df : pd.DataFrame
-        IDSSM 모델의 결과 데이터프레임 (life_percent, ARE 컬럼 필요)
-    save_dir : str, optional
-        저장 디렉토리 경로. None이면 저장하지 않음
-    figsize : tuple
-        그래프 크기 (기본값: (12, 7))
-    show_plot : bool
-        플롯 표시 여부 (기본값: True)
-    use_ratio : bool
-        Variance를 ratio (/ 10000)로 표시할지 여부 (기본값: True)
-
-    Returns:
-    --------
-    tuple
-        (fig, ax) matplotlib figure와 axis 객체
+    results_dfs : list of pd.DataFrame
+        비교할 모델들의 결과 데이터프레임 리스트
+    labels : list of str
+        각 모델의 라벨 리스트
+    ...
     """
-    # ARE 통계 계산
-    msdfm_stats = _compute_are_statistics(msdfm_results_df)
-    idssm_stats = _compute_are_statistics(idssm_results_df)
+    # 1. 논문 하드코딩 데이터 (Paper)
+    paper_percentiles = np.array([10, 20, 30, 40, 50, 60, 70, 80, 90])
+    # 논문의 Variance 값
+    paper_var_raw = np.array([0.0127, 0.014, 0.0125, 0.0046, 0.0024, 0.002, 0.0023, 0.0006, 0.0007])
+    
+    # 스케일링: 10^-3 단위로 표현하기 위해 1000을 곱함 (0.016 -> 16.0)
+    paper_var_scaled = paper_var_raw * 1000.0
 
-    # Variance 값 처리
-    if use_ratio:
-        msdfm_var = msdfm_stats['Var_ARE'].values / 10000.0
-        idssm_var = idssm_stats['Var_ARE'].values / 10000.0
-        ylabel = 'Variance of ARE (Ratio)'
-    else:
-        msdfm_var = msdfm_stats['Var_ARE'].values
-        idssm_var = idssm_stats['Var_ARE'].values
-        ylabel = 'Variance of ARE (%²)'
-
-    # 그래프 생성
     fig, ax = plt.subplots(figsize=figsize)
 
-    x = np.arange(len(msdfm_stats))
-    width = 0.35
+    # 2. Paper Data Plot (기본 비교군: 회색 점선)
+    ax.plot(paper_percentiles, paper_var_scaled, 'o--', color='gray', label='MSDFM(Paper)',
+            linewidth=2, alpha=0.6, markersize=6)
+    
+    # Paper 값 주석
+    for x, y in zip(paper_percentiles, paper_var_scaled):
+        ax.annotate(f'{y:.1f}', (x, y), textcoords="offset points", xytext=(0, -15), 
+                    ha='center', fontsize=8, color='gray')
 
-    # 막대 그래프
-    bars1 = ax.bar(x - width/2, msdfm_var, width,
-                   label='MSDFM', color='#9b59b6', alpha=0.8, edgecolor='black')
-    bars2 = ax.bar(x + width/2, idssm_var, width,
-                   label='IDSSM', color='#f39c12', alpha=0.8, edgecolor='black')
+    # 3. 모델별 데이터 Plot
+    colors = plt.cm.tab10(np.linspace(0, 1, len(results_dfs)))
 
-    # 선 그래프 오버레이
-    ax.plot(x - width/2, msdfm_var, 'o-',
-            color='#8e44ad', linewidth=2, markersize=8)
-    ax.plot(x + width/2, idssm_var, 's-',
-            color='#d68910', linewidth=2, markersize=8)
+    for i, (df, label) in enumerate(zip(results_dfs, labels)):
+        stats = _compute_are_statistics(df, bin_range=(10, 90))
+        
+        base_df = pd.DataFrame({'Percentile': paper_percentiles})
+        stats['Percentile'] = stats['Percentile'].astype(int)
+        merged = pd.merge(base_df, stats, on='Percentile', how='left')
+        
+        # 모델 Variance 스케일링
+        # df['ARE']는 % 단위이므로, Var_ARE는 %^2 단위임.
+        # Ratio^2 단위로 변환(/ 10000) 후, 10^-3 스케일(* 1000) 적용 => / 10.0
+        model_var_scaled = merged['Var_ARE'] / 10.0
+        
+        # Line Plot
+        ax.plot(merged['Percentile'], model_var_scaled, 's-', label=label,
+                color=colors[i], linewidth=2.5, markersize=8)
 
-    # 축 설정
+        # 값 주석 (모델 값)
+        for x, y in zip(merged['Percentile'], model_var_scaled):
+            if not np.isnan(y):
+                ax.annotate(f'{y:.2f}', (x, y), textcoords="offset points", xytext=(0, 8), 
+                            ha='center', fontsize=9, fontweight='bold', color=colors[i])
+
+    # 축 및 스타일 설정
     ax.set_xlabel('Life Percentile (%)', fontsize=12, fontweight='bold')
-    ax.set_ylabel(ylabel, fontsize=12, fontweight='bold')
-    ax.set_title('Variance of ARE Comparison: MSDFM vs IDSSM', fontsize=14, fontweight='bold')
-    ax.set_xticks(x)
-    ax.set_xticklabels(msdfm_stats['Percentile'].astype(int).values)
-    ax.legend(fontsize=11, loc='upper left')
-    ax.grid(True, linestyle='--', alpha=0.5, axis='y')
-
-    # 막대 위에 값 표시
-    fmt = '{:.4f}' if use_ratio else '{:.2f}'
-    for bar in bars1:
-        height = bar.get_height()
-        ax.annotate(fmt.format(height),
-                    xy=(bar.get_x() + bar.get_width() / 2, height),
-                    xytext=(0, 3), textcoords="offset points",
-                    ha='center', va='bottom', fontsize=7, rotation=45)
-
-    for bar in bars2:
-        height = bar.get_height()
-        ax.annotate(fmt.format(height),
-                    xy=(bar.get_x() + bar.get_width() / 2, height),
-                    xytext=(0, 3), textcoords="offset points",
-                    ha='center', va='bottom', fontsize=7, rotation=45)
+    ax.set_ylabel(r'Variance of ARE ($\times 10^{-3}$)', fontsize=12, fontweight='bold')
+    ax.set_title('Variance of ARE Comparison', fontsize=14, fontweight='bold')
+    ax.set_xticks(paper_percentiles)
+    ax.legend(fontsize=11)
+    ax.grid(True, linestyle='--', alpha=0.5)
 
     plt.tight_layout()
 
@@ -223,7 +200,7 @@ def plot_variance_are_comparison(msdfm_results_df, idssm_results_df, save_dir=No
     if save_dir:
         if not os.path.exists(save_dir):
             os.makedirs(save_dir)
-        save_path = os.path.join(save_dir, 'variance_are_comparison.png')
+        save_path = os.path.join(save_dir, 'variance_are_comparison_multi.png')
         plt.savefig(save_path, dpi=300, bbox_inches='tight')
         print(f"[Saved] Variance ARE comparison plot saved to: {save_path}")
 
@@ -456,8 +433,13 @@ def extract_gat_attention(model, x_sensors):
 # =========================================================
 # 통합 비교 시각화 함수
 # =========================================================
-def plot_combined_are_comparison(msdfm_results_df, idssm_results_df, save_dir=None,
-                                  figsize=(14, 6), show_plot=True):
+def plot_combined_are_comparison(
+    msdfm_results_df, 
+    idssm_results_df, 
+    save_dir=None,
+    figsize=(14, 6), 
+    show_plot=True
+):
     """
     Mean ARE와 Variance ARE를 하나의 figure에 subplot으로 표시
 
@@ -489,10 +471,10 @@ def plot_combined_are_comparison(msdfm_results_df, idssm_results_df, save_dir=No
 
     # === Left: Mean ARE ===
     ax1 = axes[0]
-    ax1.bar(x - width/2, msdfm_stats['Mean_ARE'].values, width,
-            label='MSDFM', color='#3498db', alpha=0.8, edgecolor='black')
-    ax1.bar(x + width/2, idssm_stats['Mean_ARE'].values, width,
-            label='IDSSM', color='#e74c3c', alpha=0.8, edgecolor='black')
+    # ax1.bar(x - width/2, msdfm_stats['Mean_ARE'].values, width,
+    #         label='MSDFM', color='#3498db', alpha=0.8, edgecolor='black')
+    # ax1.bar(x + width/2, idssm_stats['Mean_ARE'].values, width,
+    #         label='IDSSM', color='#e74c3c', alpha=0.8, edgecolor='black')
 
     ax1.plot(x - width/2, msdfm_stats['Mean_ARE'].values, 'o-', color='#2980b9', linewidth=2)
     ax1.plot(x + width/2, idssm_stats['Mean_ARE'].values, 's-', color='#c0392b', linewidth=2)
@@ -510,10 +492,10 @@ def plot_combined_are_comparison(msdfm_results_df, idssm_results_df, save_dir=No
     msdfm_var = msdfm_stats['Var_ARE'].values / 10000.0
     idssm_var = idssm_stats['Var_ARE'].values / 10000.0
 
-    ax2.bar(x - width/2, msdfm_var, width,
-            label='MSDFM', color='#9b59b6', alpha=0.8, edgecolor='black')
-    ax2.bar(x + width/2, idssm_var, width,
-            label='IDSSM', color='#f39c12', alpha=0.8, edgecolor='black')
+    # ax2.bar(x - width/2, msdfm_var, width,
+    #         label='MSDFM', color='#9b59b6', alpha=0.8, edgecolor='black')
+    # ax2.bar(x + width/2, idssm_var, width,
+    #         label='IDSSM', color='#f39c12', alpha=0.8, edgecolor='black')
 
     ax2.plot(x - width/2, msdfm_var, 'o-', color='#8e44ad', linewidth=2)
     ax2.plot(x + width/2, idssm_var, 's-', color='#d68910', linewidth=2)

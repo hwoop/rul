@@ -62,13 +62,16 @@ def load_and_process_data(train_path, test_path, rul_path):
 # 1. MSDFM Pipeline (Baseline)
 # ---------------------------------------------------------
 def run_msdfm_step(train_df, test_df, y_test, features, lifetimes, save_dir):
+    if not os.path.exists(save_dir):
+        os.makedirs(save_dir)
+
     print("\n" + "="*50)
-    print(" [Model A] Running MSDFM Pipeline")
+    print("Running MSDFM Pipeline")
     print("="*50)
     
     # 1.1 Parameter Estimation
     print("[MSDFM] Estimating Model Parameters...")
-    params = msdfm.MSDFM_Parameters() # Corrected access
+    params = msdfm.MSDFM_Parameters() 
     params.estimate_state_params(lifetimes)
     params.estimate_measurement_params(train_df, features)
     
@@ -147,6 +150,9 @@ def run_msdfm_step(train_df, test_df, y_test, features, lifetimes, save_dir):
     
     # Save results
     results_df.to_csv(os.path.join(save_dir, 'msdfm_results.csv'), index=False)
+    utils.save_percentile_stats(results_df, save_dir)
+    utils.plot_lifetime_performance(results_df, save_dir) 
+    utils.plot_rul_comparison(true_ruls, pred_ruls, rmse, save_dir)
     
     return rmse, overall_ware, results_df
 
@@ -154,8 +160,11 @@ def run_msdfm_step(train_df, test_df, y_test, features, lifetimes, save_dir):
 # 2. IDSSM Pipeline (Proposed)
 # ---------------------------------------------------------
 def run_idssm_step(train_df, test_df, y_test, features, drift_stats, save_dir):
+    if not os.path.exists(save_dir):
+        os.makedirs(save_dir)
+
     print("\n" + "="*50)
-    print(" [Model B] Running IDSSM Pipeline")
+    print("Running IDSSM Pipeline")
     print("="*50)
     
     # Data Prep for PyTorch
@@ -205,6 +214,9 @@ def run_idssm_step(train_df, test_df, y_test, features, drift_stats, save_dir):
     test_units = sorted(test_df['unit_nr'].unique())
     final_unit_predictions = []
     
+    # For GAT Attention Visualization
+    last_attention_weights = None
+    
     start_time = time.time()
 
     for i, unit_id in enumerate(test_units):
@@ -223,8 +235,13 @@ def run_idssm_step(train_df, test_df, y_test, features, drift_stats, save_dir):
 
             x_obs = torch.FloatTensor(X_seq[t]).unsqueeze(0)
             with torch.no_grad():
-                z_out, _ = model.encode(x_obs)
+                # model.encode returns (z, attention_weights)
+                z_out, attn = model.encode(x_obs)
                 z_obs = z_out.numpy().flatten()
+                
+                # Capture attention from the last step of the last unit (or any representative step)
+                if i == len(test_units) - 1 and t == len(X_seq) - 1:
+                    last_attention_weights = attn
 
             pf.update(z_obs, model)
             if pf.neff() < pf.N / 2: pf.resample()
@@ -271,8 +288,18 @@ def run_idssm_step(train_df, test_df, y_test, features, drift_stats, save_dir):
     utils.plot_training_loss(loss_history, save_dir)
     utils.save_unit_predictions(final_unit_predictions, rmse, overall_ware, save_dir)
     utils.save_percentile_stats(results_df, save_dir)
-    utils.plot_lifetime_performance(results_df, save_dir) # Saves as corrected png
+    utils.plot_lifetime_performance(results_df, save_dir) 
     utils.plot_rul_comparison(true_ruls, pred_ruls, rmse, save_dir)
+    
+    # --- Visualization Integration: GAT Attention Heatmap ---
+    if last_attention_weights is not None:
+        print(f"[IDSSM] Saving GAT Attention Heatmap...")
+        visualize.plot_gat_attention_heatmap(
+            last_attention_weights, 
+            sensor_names=features, 
+            save_dir=save_dir, 
+            show_plot=False
+        )
     
     return rmse, overall_ware, results_df
 
@@ -280,6 +307,7 @@ def run_idssm_step(train_df, test_df, y_test, features, drift_stats, save_dir):
 # 3. Main Execution
 # ---------------------------------------------------------
 def run_full_experiment(train_path, test_path, rul_path, save_dir):
+            
     set_seed(2024)
     if not os.path.exists(save_dir): os.makedirs(save_dir)
     print(f"Experiment Results will be saved to: {save_dir}")
@@ -288,25 +316,29 @@ def run_full_experiment(train_path, test_path, rul_path, save_dir):
     print("Loading and Processing Data...")
     train, test, y_test, feats, lifetimes, drift = load_and_process_data(train_path, test_path, rul_path)
     
-    # 3. Run IDSSM
-    try:
-        rmse_b, ware_b, res_b = run_idssm_step(train, test, y_test, feats, drift, f'{save_dir}/idssm')
-    except Exception as e:
-        print(f"[IDSSM] Failed: {e}")
-        import traceback
-        traceback.print_exc()
-        rmse_b, ware_b = float('nan'), float('nan')
+    # Initialize result containers
+    res_msdfm = None # MSDFM results
+    res_idssm = None # IDSSM results
 
     # 2. Run MSDFM
     try:
-        rmse_a, ware_a, res_a = run_msdfm_step(train, test, y_test, feats, lifetimes, f'{save_dir}/msdfm')
+        rmse_a, ware_a, res_msdfm = run_msdfm_step(train, test, y_test, feats, lifetimes, f'{save_dir}/msdfm')
     except Exception as e:
         print(f"[MSDFM] Failed: {e}")
         import traceback
         traceback.print_exc()
         rmse_a, ware_a = float('nan'), float('nan')
         
-    # 4. Final Comparison
+    # 3. Run IDSSM
+    try:
+        rmse_b, ware_b, res_idssm = run_idssm_step(train, test, y_test, feats, drift, f'{save_dir}/idssm')
+    except Exception as e:
+        print(f"[IDSSM] Failed: {e}")
+        import traceback
+        traceback.print_exc()
+        rmse_b, ware_b = float('nan'), float('nan')
+
+    # 4. Final Comparison & Visualization
     print("\n" + "="*50)
     print(" FINAL COMPARISON SUMMARY")
     print("="*50)
@@ -322,6 +354,52 @@ def run_full_experiment(train_path, test_path, rul_path, save_dir):
         f.write(f"Model  | RMSE       | WARE (%)\n")
         f.write(f"MSDFM  | {rmse_a:.4f}     | {ware_a:.2f}\n")
         f.write(f"IDSSM  | {rmse_b:.4f}     | {ware_b:.2f}\n")
+
+    # --- Visualization Integration: Comparative Plots ---
+    if res_msdfm is not None and res_idssm is not None:
+        print("\n[Visualization] Generating Comparative Plots (MSDFM vs IDSSM)...")
+        try:
+            # Combined ARE Plot (Mean & Variance)
+            # visualize.plot_combined_are_comparison(
+            #     msdfm_results_df=res_msdfm,
+            #     idssm_results_df=res_idssm,
+            #     save_dir=save_dir,
+            #     show_plot=False
+            # )
+            
+            # Individual Plots (optional, but good for detailed view)
+            visualize.plot_mean_are_comparison(
+                results_dfs=[res_msdfm, res_idssm],
+                labels=["MSDFM", "IDSSM"],
+                save_dir=f'{save_dir}/all',
+                show_plot=False
+            )
+            visualize.plot_variance_are_comparison(
+                results_dfs=[res_msdfm, res_idssm],
+                labels=["MSDFM", "IDSSM"],
+                save_dir=f'{save_dir}/all',
+                show_plot=False
+            )
+            visualize.plot_mean_are_comparison(
+                results_dfs=[res_idssm],
+                labels=["IDSSM"],
+                save_dir=f'{save_dir}/baseline',
+                show_plot=False
+            )
+            visualize.plot_variance_are_comparison(
+                results_dfs=[res_idssm],
+                labels=["IDSSM"],
+                save_dir=f'{save_dir}/baseline',
+                show_plot=False
+            )
+            
+            print("[Visualization] All comparative plots saved successfully.")
+        except Exception as e:
+            print(f"[Visualization] Error generating comparative plots: {e}")
+            import traceback
+            traceback.print_exc()
+    else:
+        print("\n[Visualization] Skipping comparative plots because one or both models failed.")
 
 def save_results_dir():
     id = datetime.datetime.now().strftime("%d%m%Y_%H%M%S")

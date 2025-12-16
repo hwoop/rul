@@ -1,11 +1,27 @@
+"""
+Particle Filter Implementation for MSDFM
+
+Reference: "Remaining useful life prediction based on a multi-sensor data fusion model"
+Li et al., Reliability Engineering and System Safety 208 (2021) 107249
+
+Key Implementation Details:
+- Table 1: RUL prediction algorithm using a random sensor group
+- Eq. 19: State prediction step
+- Eq. 20: Weight update using multivariate normal likelihood
+- Eq. 21: RUL PDF (Inverse Gaussian distribution)
+- Reference [27]: Fuzzy resampling algorithm
+"""
+
 import numpy as np
-from scipy.stats import multivariate_normal, invgauss
+from scipy.stats import multivariate_normal
 from config import Config
+
 
 class ParticleFilter:
     """
-    Particle Filter for joint estimation of degradation rate and system state.
-    Implements the algorithm in Table 1 with fuzzy resampling [27].
+    Particle Filter for joint estimation of degradation rate (η) and system state (x).
+    
+    Implements the algorithm described in Table 1 of the paper.
     """
     
     def __init__(self, params, sensors, initial_data=None):
@@ -13,207 +29,163 @@ class ParticleFilter:
         Initialize particle filter.
         
         Args:
-            params: MSDFM_Parameters object
+            params: MSDFM_Parameters object containing estimated parameters
             sensors: List of sensor names to use
-            initial_data: IMPORTANT - First measurement for proper initialization
+            initial_data: First measurement vector for state initialization (optional)
         """
         self.params = params
         self.sensors = sensors
         self.Ns = Config.NUM_PARTICLES
         
-        # Particles: [eta, x]
+        # ================================================================
+        # PARTICLE INITIALIZATION (Section 3.3.1)
+        # ================================================================
+        # Particles: [η (degradation rate), x (system state)]
         self.particles = np.zeros((self.Ns, 2))
         
-        # ================================================================
-        # ADAPTIVE INITIALIZATION
-        # ================================================================
-        # Wider initial distribution for robustness
-        eta_std_multiplier = 3.0  # More conservative
+        # η is sampled from N(μ_η, σ²_η) - as stated in the paper
         self.particles[:, 0] = np.random.normal(
             params.mu_eta, 
-            params.sigma_eta * eta_std_multiplier,
+            params.sigma_eta,
             self.Ns
         )
+        # Ensure positive degradation rates
+        self.particles[:, 0] = np.maximum(self.particles[:, 0], 1e-8)
         
-        # Clamp to reasonable range
-        eta_min = params.mu_eta * 0.1
-        eta_max = params.mu_eta * 10.0
-        self.particles[:, 0] = np.clip(self.particles[:, 0], eta_min, eta_max)
-        
+        # x initialized to 0 (Section 3.1: "initial value is 0")
         self.particles[:, 1] = 0.0
+        
+        # Uniform initial weights: w^i_0 = 1/N_s
         self.weights = np.ones(self.Ns) / self.Ns
         
-        # Track update count for adaptive inflation
-        self.update_count = 0
-        
         # ================================================================
-        # INITIALIZE WITH FIRST MEASUREMENT
+        # OPTIONAL: Initialize from first measurement (for test units)
         # ================================================================
         if initial_data is not None:
-            x_init_estimates = self._infer_initial_state(initial_data)
+            x_init = self._infer_initial_state(initial_data)
+            # Add small noise for diversity
+            self.particles[:, 1] = x_init + np.random.normal(0, 0.02, self.Ns)
+            self.particles[:, 1] = np.clip(self.particles[:, 1], 0, 0.99)
             
-            self.particles[:, 1] = x_init_estimates + np.random.normal(
-                0, 0.1, self.Ns
-            )
-            self.particles[:, 1] = np.maximum(0, self.particles[:, 1])
-            
-            # Use high inflation for first update
-            self.update(initial_data, inflation_factor=Config.INITIAL_COVARIANCE_INFLATION)
+            # Perform initial update
+            self.update(initial_data)
             self.fuzzy_resampling()
 
     def _infer_initial_state(self, measurement_vector):
         """
-        Infer initial state distribution from first measurement.
-        Uses inverse measurement function.
+        Infer initial state from first measurement using inverse measurement function.
         
-        Args:
-            measurement_vector: First measurement [y_1, ..., y_P]
-            
-        Returns:
-            x_estimates: Array of inferred x values for each particle
+        Uses: x = ψ((y - b) / a, θ) where ψ is inverse of φ
+        For φ(x) = x^c: x = ((y - b) / a)^(1/c)
         """
-        P = len(self.sensors)
         x_estimates = []
         
         for i, sensor in enumerate(self.sensors):
             p = self.params.sensor_params[sensor]
             y_meas = measurement_vector[i]
             
-            # Inverse function: x = ((y - b) / a)^(1/c)
             try:
                 val = (y_meas - p['b']) / p['a']
-                if val > 0:
-                    x_est = val ** (1 / p['c'])
-                    x_estimates.append(x_est)
-            except:
-                pass
+                if val > 0 and p['c'] > 0:
+                    x_est = val ** (1.0 / p['c'])
+                    if 0 <= x_est <= 1:
+                        x_estimates.append(x_est)
+            except (ValueError, ZeroDivisionError):
+                continue
         
         if len(x_estimates) == 0:
-            # Fallback: use small positive values
-            return np.random.uniform(0, 0.1, self.Ns)
+            return np.zeros(self.Ns)
         
-        # Use median of estimates and add particle diversity
-        x_median = np.median(x_estimates)
-        x_median = np.clip(x_median, 0, 0.5)  # Sanity check
-        
-        # Generate particles around median
-        return np.random.normal(x_median, 0.1, self.Ns)
+        # Use median for robustness
+        return np.full(self.Ns, np.median(x_estimates))
     
     def predict(self):
         """
-        State transition step (Eq 19).
+        State transition step - Eq. 19
         
-        Implements: x_k = x_{k-1} + eta_{k-1} * dt + omega
-        where omega ~ N(0, sigma_B^2 * dt)
+        x^i_k = x^i_{k-1} + η^i_{k-1} * Δt_k + ω^i_{k-1}
+        
+        where ω ~ N(0, σ²_B * Δt)
         """
         eta = self.particles[:, 0]
         x_prev = self.particles[:, 1]
         dt = Config.DT
         
         # State transition noise (Brownian motion increment)
+        # ω ~ N(0, σ²_B * Δt)
         omega = np.random.normal(0, self.params.sigma_B * np.sqrt(dt), self.Ns)
         
-        # Update state
+        # State update
         x_new = x_prev + eta * dt + omega
         
-        # Physical constraint: x >= 0 (though rarely violated)
+        # Physical constraint: x >= 0
         x_new = np.maximum(x_new, 0.0)
         
         self.particles[:, 1] = x_new
     
-    def update(self, measurement_vector, inflation_factor=None):
+    def update(self, measurement_vector):
         """
-        Weight update using multivariate likelihood (Eq 20).
+        Weight update using multivariate normal likelihood - Eq. 20
         
-        Args:
-            measurement_vector: Array of sensor measurements [y_1, ..., y_P]
-            inflation_factor: If None, uses adaptive strategy
+        w^i_k ∝ w^i_{k-1} * p(Y_Ω,n,k | x^i_k)
+        
+        where p(Y|x) = N(Y; A_Ω Φ^i_Ω,k + B_Ω, Σ_Ω)
         """
-        self.update_count += 1
-        
-        # ================================================================
-        # ADAPTIVE INFLATION STRATEGY
-        # ================================================================
-        if inflation_factor is None:
-            # Decrease inflation as confidence grows
-            if self.update_count <= 5:
-                inflation_factor = Config.INITIAL_COVARIANCE_INFLATION
-            elif self.update_count <= 10:
-                inflation_factor = Config.REGULAR_COVARIANCE_INFLATION * 2
-            else:
-                inflation_factor = Config.REGULAR_COVARIANCE_INFLATION
-        
         P = len(self.sensors)
         x_particles = self.particles[:, 1]
         
         # ================================================================
-        # PREDICT MEASUREMENTS (with safety bounds)
+        # COMPUTE PREDICTED MEASUREMENTS: Y_pred = A * Φ(x) + B
         # ================================================================
         Y_pred = np.zeros((self.Ns, P))
         
         for i, sensor in enumerate(self.sensors):
             p = self.params.sensor_params[sensor]
             
-            # Safe power computation
-            x_clipped = np.clip(x_particles, 1e-6, 10.0)
+            # Φ(x) = x^c (polynomial function)
+            # Clip x to avoid numerical issues
+            x_clipped = np.clip(x_particles, 1e-10, 10.0)
+            phi_x = x_clipped ** p['c']
             
-            try:
-                phi_x = x_clipped ** p['c']
-            except:
-                phi_x = np.ones_like(x_clipped)
-            
-            # Prevent extreme predictions
-            phi_x = np.clip(phi_x, -1e6, 1e6)
+            # Y = a * Φ(x) + b
             Y_pred[:, i] = p['a'] * phi_x + p['b']
         
-        Y_obs = measurement_vector
-        residuals = Y_obs - Y_pred
+        # ================================================================
+        # COMPUTE RESIDUALS
+        # ================================================================
+        Y_obs = np.array(measurement_vector)
+        residuals = Y_obs - Y_pred  # (Ns, P)
         
         # ================================================================
-        # DIAGNOSTIC: Check residual magnitude
-        # ================================================================
-        max_residual = np.abs(residuals).max()
-        mean_residual = np.abs(residuals).mean()
-        
-        if max_residual > 10:
-            print(f"  [Update {self.update_count}] Large residuals detected:")
-            print(f"    Max: {max_residual:.2f}, Mean: {mean_residual:.2f}")
-            # Emergency inflation
-            inflation_factor = max(inflation_factor, 50.0)
-        
-        # ================================================================
-        # BUILD COVARIANCE MATRIX
+        # GET COVARIANCE MATRIX FOR SELECTED SENSORS
         # ================================================================
         try:
             full_sensors = self.params.sensor_list
-            current_indices = [full_sensors.index(s) for s in self.sensors]
-            cov = self.params.Cov_matrix[np.ix_(current_indices, current_indices)]
+            indices = [full_sensors.index(s) for s in self.sensors]
+            cov = self.params.Cov_matrix[np.ix_(indices, indices)].copy()
         except (AttributeError, ValueError, IndexError):
-            cov = self.params.Cov_matrix
+            cov = self.params.Cov_matrix.copy()
         
-        if np.ndim(cov) == 0: 
-            cov = np.array([[cov]])
+        if np.ndim(cov) == 0:
+            cov = np.array([[float(cov)]])
         
         # ================================================================
-        # ROBUST COVARIANCE INFLATION
+        # ENSURE NUMERICAL STABILITY OF COVARIANCE
         # ================================================================
-        # Base inflation
-        cov = cov * inflation_factor
-        
-        # Adaptive regularization based on residuals
-        residual_vars = np.var(residuals, axis=0)
-        adaptive_reg = np.diag(residual_vars * 0.5)  # 50% of observed variance
-        cov = cov + adaptive_reg + np.eye(P) * 1e-4
+        # Add minimal regularization (NOT the large inflation from before)
+        epsilon = Config.COVARIANCE_REGULARIZATION
+        cov = cov + epsilon * np.eye(P)
         
         # Ensure positive definiteness
         eigvals = np.linalg.eigvalsh(cov)
-        if eigvals.min() < 1e-6:
-            cov += np.eye(P) * (1e-6 - eigvals.min() + 1e-6)
+        if eigvals.min() < epsilon:
+            cov += (epsilon - eigvals.min() + epsilon) * np.eye(P)
         
         # ================================================================
-        # COMPUTE LIKELIHOODS (log-space for stability)
+        # COMPUTE LIKELIHOODS (Eq. 20)
         # ================================================================
         try:
+            # Use log-space for numerical stability
             log_likelihoods = multivariate_normal.logpdf(
                 residuals,
                 mean=np.zeros(P),
@@ -221,59 +193,33 @@ class ParticleFilter:
                 allow_singular=True
             )
             
-            # Shift to prevent underflow
+            # Normalize in log-space to prevent underflow
             log_likelihoods = log_likelihoods - log_likelihoods.max()
             likelihoods = np.exp(log_likelihoods)
             
         except Exception as e:
-            print(f"  Warning: Likelihood calculation failed: {e}")
+            print(f"  Warning: Likelihood computation failed: {e}")
             likelihoods = np.ones(self.Ns)
         
         # ================================================================
-        # DEFENSIVE MIXTURE
+        # UPDATE WEIGHTS
         # ================================================================
-        mixture_weight = 0.05  # 5% uniform (increased from 1%)
-        likelihoods = (1 - mixture_weight) * likelihoods + \
-                    mixture_weight / self.Ns
+        self.weights = self.weights * likelihoods
         
-        # Update weights
-        self.weights *= likelihoods
-        self.weights += 1e-300
-        
+        # Normalize weights
         weight_sum = np.sum(self.weights)
-        if weight_sum > 0:
-            self.weights /= weight_sum
+        if weight_sum > 1e-300:
+            self.weights = self.weights / weight_sum
         else:
-            print("  Warning: Complete weight collapse, resetting")
+            # Complete weight collapse - reset to uniform
+            print("  Warning: Weight collapse detected, resetting to uniform")
             self.weights = np.ones(self.Ns) / self.Ns
-            return
-        
-        # ================================================================
-        # MONITOR AND RECOVER
-        # ================================================================
-        N_eff = self.effective_sample_size()
-        
-        if N_eff < self.Ns * Config.MIN_EFFECTIVE_SAMPLE_SIZE_RATIO:
-            print(f"  [Update {self.update_count}] Critical N_eff={N_eff:.1f}, recovering...")
-            
-            # Emergency diversity injection
-            eta_std = max(np.std(self.particles[:, 0]), self.params.sigma_eta * 0.5)
-            x_std = max(np.std(self.particles[:, 1]), 0.05)
-            
-            self.particles[:, 0] += np.random.normal(0, eta_std * 0.3, self.Ns)
-            self.particles[:, 1] += np.random.normal(0, x_std * 0.3, self.Ns)
-            self.particles[:, 1] = np.maximum(0, self.particles[:, 1])
-            
-            # Partial weight reset
-            self.weights = 0.5 * self.weights + 0.5 / self.Ns
     
     def effective_sample_size(self):
         """
-        Calculate effective sample size: N_eff = 1 / sum(w_i^2)
+        Calculate effective sample size: N_eff = 1 / Σ(w_i²)
         
-        This metric indicates particle degeneracy:
-        - N_eff ≈ Ns: Good diversity
-        - N_eff << Ns: Severe degeneracy (few particles have most weight)
+        Used to determine when resampling is needed.
         """
         return 1.0 / np.sum(self.weights ** 2)
     
@@ -281,181 +227,136 @@ class ParticleFilter:
         """
         Fuzzy resampling algorithm from Reference [27].
         
-        Process (Section 3.3.1, Table 1):
+        Li et al. (2019) - "A Wiener-process-model-based method for remaining 
+        useful life prediction considering unit-to-unit variability"
+        
+        Process:
         1. Systematic resampling to select particles
         2. Add "fuzzing" noise to duplicated particles to maintain diversity
-        
-        The fuzzing noise prevents particle collapse and improves long-term
-        tracking performance.
         """
         Ns = self.Ns
-        weights = self.weights
+        weights = self.weights.copy()
         
         # ====================================================================
-        # Step 1: Systematic Resampling
+        # CHECK IF RESAMPLING IS NEEDED
         # ====================================================================
-        cumulative_sum = np.cumsum(weights)
-        cumulative_sum[-1] = 1.0  # Ensure exact sum
+        N_eff = self.effective_sample_size()
+        if N_eff >= Ns * Config.ESS_THRESHOLD_RATIO:
+            return  # No resampling needed
         
-        # Systematic sampling
-        u = np.random.random()
-        positions = (u + np.arange(Ns)) / Ns
-        indexes = np.searchsorted(cumulative_sum, positions)
+        # ====================================================================
+        # STEP 1: Systematic Resampling
+        # ====================================================================
+        cumsum = np.cumsum(weights)
+        cumsum[-1] = 1.0  # Ensure exact sum
+        
+        # Generate systematic sample points
+        u0 = np.random.random() / Ns
+        positions = u0 + np.arange(Ns) / Ns
+        
+        # Find indices
+        indexes = np.searchsorted(cumsum, positions)
+        indexes = np.clip(indexes, 0, Ns - 1)
         
         # Resample particles
         new_particles = self.particles[indexes].copy()
         
         # ====================================================================
-        # Step 2: Fuzzing (Add noise to duplicated particles)
+        # STEP 2: Fuzzing (Add noise to maintain diversity)
         # ====================================================================
-        # Identify which particles were selected multiple times
-        unique, counts = np.unique(indexes, return_counts=True)
+        # Reference [27]: "noise std = sqrt(variance / Np)"
+        # Only fuzz the degradation rate η, not the state x
         
-        # Calculate fuzzing noise std based on particle variance
-        # Following [27]: "noise std = sqrt(variance / Np)"
+        # Calculate variance of η before resampling
         var_eta = np.var(self.particles[:, 0])
+        sigma_fuzz = np.sqrt(var_eta / Ns) if var_eta > 0 else 1e-8
         
-        # Fuzzing noise standard deviation
-        # Note: Paper uses variance BEFORE resampling
-        sigma_noise = np.sqrt(var_eta / Ns) if var_eta > 0 else 1e-6
+        # Find duplicated particles
+        unique_idx, counts = np.unique(indexes, return_counts=True)
         
-        # Apply fuzzing to duplicated particles
-        for idx, count in zip(unique, counts):
-            if count > 1:  # Particle was selected multiple times
-                # Find all copies
+        for idx, count in zip(unique_idx, counts):
+            if count > 1:
+                # Find all copies of this particle
                 mask = (indexes == idx)
-                
-                # Add Gaussian noise to eta (degradation rate parameter)
-                # Only the RATE is fuzzed, not the state x
-                noise = np.random.normal(0, sigma_noise, count)
+                # Add fuzzing noise to η (degradation rate)
+                noise = np.random.normal(0, sigma_fuzz, count)
                 new_particles[mask, 0] += noise
         
-        # Update particles
-        self.particles = new_particles
+        # Ensure positive η
+        new_particles[:, 0] = np.maximum(new_particles[:, 0], 1e-8)
         
-        # Reset weights to uniform (standard after resampling)
+        # Update particles and reset weights
+        self.particles = new_particles
         self.weights = np.ones(Ns) / Ns
     
     def estimate_rul(self, return_distribution=False):
         """
-        RUL prediction following Eq 21 with numerical stability.
+        RUL prediction using closed-form solution - Eq. 21
         
-        Args:
-            return_distribution: If True, returns (mean, std) of RUL distribution
-                            If False, returns only mean RUL
+        The RUL PDF follows an Inverse Gaussian distribution:
+        f(l|x̂_k, η̂_k) = (D - x̂_k) / sqrt(2π σ̂²_B l³) * exp(-(l*η̂_k - D + x̂_k)² / (2σ̂²_B l))
         
-        Returns:
-            If return_distribution=False: 
-                rul_mean (scalar)
-            If return_distribution=True:
-                (rul_mean, rul_std) tuple
+        The expectation of this distribution is:
+        E[L] = (D - x̂_k) / η̂_k
+        
+        Paper uses MEDIAN for η̂_k and x̂_k (Section 3.3.1)
         """
-        # Use median for robustness (stated in Section 3.3.1)
+        # Use median as stated in the paper (Section 3.3.1)
         eta_hat = np.median(self.particles[:, 0])
         x_hat = np.median(self.particles[:, 1])
         
         D = Config.FAILURE_THRESHOLD
         
-        # ================================================================
-        # BOUNDARY CONDITIONS
-        # ================================================================
+        # Boundary conditions
         if x_hat >= D:
             return (0.0, 0.0) if return_distribution else 0.0
         
         if eta_hat <= 1e-9:
+            # Very slow degradation - return large RUL
             return (1000.0, 500.0) if return_distribution else 1000.0
         
-        # ================================================================
-        # MEAN RUL (First Passage Time)
-        # ================================================================
+        # Mean RUL (First Passage Time expectation for Wiener process)
         mean_rul = (D - x_hat) / eta_hat
         
         if not return_distribution:
-            return mean_rul
+            return max(0, mean_rul)
         
         # ================================================================
-        # ROBUST VARIANCE ESTIMATION
+        # VARIANCE ESTIMATION (from Inverse Gaussian distribution)
         # ================================================================
-        # Problem: Theoretical variance from Eq 21 explodes for small x
-        # Solution: Use empirical variance from particles + theoretical correction
+        # Var[L] = (D - x̂_k)³ / (η̂_k² * σ²_B)
+        # This can be very large for small x, so we also compute particle-based variance
         
-        # Method 1: Particle-based variance (most robust)
+        # Method 1: Particle-based variance (more robust)
         rul_particles = []
-        for i in range(min(1000, self.Ns)):  # Sample for efficiency
+        for i in range(self.Ns):
             eta_i = self.particles[i, 0]
             x_i = self.particles[i, 1]
-            
             if eta_i > 1e-9 and x_i < D:
                 rul_i = (D - x_i) / eta_i
-                rul_particles.append(rul_i)
+                if rul_i > 0:
+                    rul_particles.append(rul_i)
         
         if len(rul_particles) > 10:
-            # Use empirical variance
-            particle_var = np.var(rul_particles)
-            particle_std = np.sqrt(particle_var)
-            
-            # Sanity check: std should be reasonable relative to mean
-            if particle_std < mean_rul * 2:
-                return mean_rul, particle_std
+            std_rul = np.std(rul_particles)
+        else:
+            # Fallback: theoretical variance with clipping
+            var_theory = (D - x_hat)**3 / (eta_hat**2 * max(self.params.sigma_B**2, 1e-9))
+            std_rul = np.sqrt(var_theory)
+            # Clip to reasonable range (< 200% CV)
+            std_rul = min(std_rul, mean_rul * 2.0)
         
-        # Method 2: Theoretical variance with clipping (Eq 21 with safety)
-        numerator = (D - x_hat) ** 3
-        denominator = (eta_hat ** 2) * (self.params.sigma_B ** 2)
-        
-        if denominator > 0:
-            var_rul_theory = numerator / denominator
-            
-            # ================================================================
-            # CRITICAL: Clip theoretical variance to reasonable range
-            # ================================================================
-            # Based on uncertainty propagation:
-            # - Early stage (x small): High uncertainty
-            # - Late stage (x near D): Low uncertainty
-            
-            # Adaptive clipping based on degradation progress
-            progress = x_hat / D  # 0 to 1
-            
-            if progress < 0.1:
-                # Very early: cap at 200% CV
-                max_std = mean_rul * 2.0
-            elif progress < 0.5:
-                # Early-mid: cap at 100% CV
-                max_std = mean_rul * 1.0
-            else:
-                # Late stage: cap at 50% CV
-                max_std = mean_rul * 0.5
-            
-            std_rul_theory = np.sqrt(var_rul_theory)
-            std_rul = min(std_rul_theory, max_std)
-            
-            return mean_rul, std_rul
-        
-        # Method 3: Fallback - use coefficient of variation from particles
-        eta_cv = np.std(self.particles[:, 0]) / (np.mean(self.particles[:, 0]) + 1e-9)
-        x_cv = np.std(self.particles[:, 1]) / (np.mean(self.particles[:, 1]) + 1e-9)
-        
-        # Combined uncertainty
-        combined_cv = np.sqrt(eta_cv**2 + x_cv**2)
-        std_rul = mean_rul * min(combined_cv, 1.0)  # Cap at 100% CV
-        
-        return mean_rul, std_rul
+        return max(0, mean_rul), max(0, std_rul)
     
     def get_state_estimate(self):
-        """
-        Get current state estimate (median of particles).
-        
-        Returns:
-            (eta_hat, x_hat): Estimated degradation rate and state
-        """
+        """Get current state estimate (median of particles)."""
         eta_hat = np.median(self.particles[:, 0])
         x_hat = np.median(self.particles[:, 1])
         return eta_hat, x_hat
     
-
     def get_diagnostics(self):
-        """Get detailed diagnostic information."""
+        """Get diagnostic information for debugging."""
         N_eff = self.effective_sample_size()
-        
         return {
             'N_eff': N_eff,
             'N_eff_ratio': N_eff / self.Ns,
@@ -466,7 +367,5 @@ class ParticleFilter:
             'x_std': np.std(self.particles[:, 1]),
             'x_median': np.median(self.particles[:, 1]),
             'weight_max': np.max(self.weights),
-            'weight_min': np.min(self.weights),
             'weight_entropy': -np.sum(self.weights * np.log(self.weights + 1e-300)),
-            'update_count': self.update_count
-        }            
+        }
