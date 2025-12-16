@@ -8,13 +8,14 @@ visualize.py - MSDFM/IDSSM 모델 성능 비교 및 GAT Attention 시각화 모�
 """
 
 import os
+import re
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 import torch
 
-
+    
 def _compute_are_statistics(results_df, bin_range=(10, 90)):
     """
     ARE 통계(Mean, Variance)를 Percentile 구간별로 계산
@@ -527,48 +528,107 @@ def plot_combined_are_comparison(
     return fig, axes
 
 
-# =========================================================
-# 사용 예제
-# =========================================================
-if __name__ == "__main__":
-    # 예제 실행을 위한 더미 데이터 생성
-    print("=" * 60)
-    print("visualize.py - 사용 예제")
-    print("=" * 60)
+def plot_psgs_ware(ranked_sensors, group_scores, sensor_scores, title_suffix="", 
+                   save_dir=None, figsize=(14, 5), show_plot=True):
+    """
+    PSGS(Priority Sensor Group Selection) 알고리즘 결과 시각화 (논문 Fig 6 & 9 재현)
+    (a) 우선순위별 개별 센서 WARE 점수
+    (b) 센서 그룹 크기에 따른 WARE 점수 변화 및 최적 그룹
 
-    # 1. 더미 ARE 결과 데이터 생성
-    np.random.seed(42)
-    n_samples = 1000
+    Parameters:
+    -----------
+    ranked_sensors : list
+        WARE 점수 순으로 정렬된 센서 이름 리스트
+    group_scores : list or np.array
+        그룹별(상위 n개 센서 조합) WARE 점수 리스트
+    sensor_scores : dict
+        센서별 개별 WARE 점수 딕셔너리 {sensor_name: score}
+    title_suffix : str, optional
+        그래프 제목에 붙일 접미사
+    save_dir : str, optional
+        저장 디렉토리 경로. None이면 저장하지 않음
+    figsize : tuple
+        그래프 크기
+    show_plot : bool
+        플롯 표시 여부
+    """
+    fig, axes = plt.subplots(1, 2, figsize=figsize)
+    
+    # -------------------------------------------------------
+    # (a) Individual Scores (Bar Chart)
+    # -------------------------------------------------------
+    ordered_scores = [sensor_scores[s] for s in ranked_sensors]
+    x_indices = np.arange(1, len(ranked_sensors) + 1)
+    
+    bars = axes[0].bar(x_indices, ordered_scores, width=0.4, color='tab:blue', alpha=0.8)
+    
+    axes[0].set_xlabel('Prioritized Order', fontsize=11, fontweight='bold')
+    axes[0].set_ylabel('WARE Score (%)', fontsize=11, fontweight='bold')
+    title_a = f'Individual Sensor WARE'
+    if title_suffix: title_a += f' ({title_suffix})'
+    axes[0].set_title(title_a, fontsize=12, fontweight='bold')
+    axes[0].set_xticks(x_indices)
+    
+    # 센서 번호 텍스트 표시 (예: s_2 -> 2)
+    for bar, sensor_name in zip(bars, ranked_sensors):
+        height = bar.get_height()
+        # "s_2" 등에서 숫자만 추출
+        s_nums = re.findall(r'\d+', sensor_name)
+        s_num = s_nums[0] if s_nums else sensor_name
+        
+        axes[0].text(bar.get_x() + bar.get_width()/2., height, f'{s_num}',
+                     ha='center', va='bottom', fontsize=9, fontweight='bold')
+    
+    axes[0].grid(True, axis='y', linestyle='--', alpha=0.5)
 
-    # MSDFM 더미 데이터
-    msdfm_data = {
-        'life_percent': np.random.uniform(5, 95, n_samples),
-        'ARE': np.random.exponential(10, n_samples) + 5
-    }
-    msdfm_df = pd.DataFrame(msdfm_data)
+    # -------------------------------------------------------
+    # (b) Group Scores (Line Chart)
+    # -------------------------------------------------------
+    x = np.arange(1, len(group_scores) + 1)
+    axes[1].plot(x, group_scores, 'b.-', markersize=8, linewidth=1.5)
+    
+    # Optimal Point 표시
+    min_idx = np.argmin(group_scores)
+    min_val = group_scores[min_idx]
+    
+    axes[1].plot(min_idx + 1, min_val, 'ro', label='Optimal Sensor Group', markersize=8)
+    axes[1].annotate(f'Optimal (n={min_idx+1})', 
+                     xy=(min_idx+1, min_val), 
+                     xytext=(min_idx+1, min_val * 1.15),
+                     ha='center', fontsize=10, fontweight='bold', color='red',
+                     arrowprops=dict(facecolor='red', shrink=0.05, width=1.5, headwidth=8))
+    
+    axes[1].set_xlabel('Number of Sensors in Group', fontsize=11, fontweight='bold')
+    axes[1].set_ylabel('WARE Score (%)', fontsize=11, fontweight='bold')
+    title_b = f'Group WARE Scores'
+    if title_suffix: title_b += f' ({title_suffix})'
+    axes[1].set_title(title_b, fontsize=12, fontweight='bold')
+    axes[1].grid(True, linestyle='--', alpha=0.5)
+    axes[1].legend()
+    
+    plt.tight_layout()
+    
+    # -------------------------------------------------------
+    # Save & Show Logic (프로젝트 표준 준수)
+    # -------------------------------------------------------
+    if save_dir:
+        if not os.path.exists(save_dir):
+            os.makedirs(save_dir)
+            
+        # 파일명 생성 로직
+        clean_suffix = re.sub(r'\W+', '_', title_suffix).strip('_')
+        filename = "psgs_ware_analysis"
+        if clean_suffix:
+            filename += f"_{clean_suffix}"
+        filename += ".png"
+        
+        save_path = os.path.join(save_dir, filename)
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        print(f"[Saved] PSGS WARE plot saved to: {save_path}")
 
-    # IDSSM 더미 데이터 (성능이 더 좋다고 가정)
-    idssm_data = {
-        'life_percent': np.random.uniform(5, 95, n_samples),
-        'ARE': np.random.exponential(7, n_samples) + 3
-    }
-    idssm_df = pd.DataFrame(idssm_data)
+    if show_plot:
+        plt.show()
+    else:
+        plt.close()
 
-    print("\n[예제 1] Mean ARE 비교 플롯")
-    plot_mean_are_comparison(msdfm_df, idssm_df, show_plot=False)
-
-    print("\n[예제 2] Variance ARE 비교 플롯")
-    plot_variance_are_comparison(msdfm_df, idssm_df, show_plot=False)
-
-    print("\n[예제 3] GAT Attention Heatmap")
-    # 더미 attention weights (16개 센서)
-    dummy_attention = np.random.dirichlet(np.ones(16), size=16)
-    sensor_names = [f's_{i}' for i in range(2, 18)]  # s_2 ~ s_17 (s_1, s_5, s_10 등 제외 가정)
-    plot_gat_attention_heatmap(dummy_attention, sensor_names=sensor_names, show_plot=False)
-
-    print("\n[예제 4] 통합 ARE 비교 플롯")
-    plot_combined_are_comparison(msdfm_df, idssm_df, show_plot=False)
-
-    print("\n" + "=" * 60)
-    print("모든 예제 실행 완료!")
-    print("=" * 60)
+    return fig, axes

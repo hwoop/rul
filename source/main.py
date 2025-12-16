@@ -77,8 +77,18 @@ def run_msdfm_step(train_df, test_df, y_test, features, lifetimes, save_dir):
     
     # 1.2 Sensor Selection (PSGS)
     print("[MSDFM] Running PSGS for Sensor Selection...")
-    best_sensors, ranked, group_scores, _ = msdfm.psgs_algorithm(train_df, lifetimes, params)
+    best_sensors, ranked, group_scores, individual_scores = msdfm.psgs_algorithm(train_df, lifetimes, params)
     print(f"[MSDFM] Optimal Sensor Group ({len(best_sensors)}): {best_sensors}")
+    
+    # PSGS 결과 시각화
+    visualize.plot_psgs_ware(
+        ranked_sensors=ranked,
+        group_scores=group_scores,
+        sensor_scores=individual_scores,
+        title_suffix="FD001",  # 데이터셋 이름 등을 접미사로 추가
+        save_dir=save_dir,
+        show_plot=False
+    )
     
     # Update params to use only best sensors (subset covariance)
     indices = [params.sensor_list.index(s) for s in best_sensors]

@@ -139,7 +139,7 @@ def plot_rul_comparison(true_ruls, pred_ruls, rmse, save_dir):
     plt.figure(figsize=(14, 6))
     unit_indices = np.arange(1, len(true_ruls) + 1)
     plt.plot(unit_indices, true_ruls, 'o-', label='Actual RUL', color='black', alpha=0.6, markersize=5)
-    plt.plot(unit_indices, pred_ruls, 'x-', label='Predicted RUL (ID-SSM)', color='red', alpha=0.8, markersize=6)
+    plt.plot(unit_indices, pred_ruls, 'x-', label='Predicted RUL', color='red', alpha=0.8, markersize=6)
     plt.fill_between(unit_indices, true_ruls, pred_ruls, color='gray', alpha=0.2, label='Prediction Error')
 
     plt.title(f'RUL Prediction Comparison (Test RMSE: {rmse:.2f})', fontsize=14)
