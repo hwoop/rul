@@ -42,7 +42,8 @@ def load_and_process_data(train_path, test_path, rul_path):
     train['state_x'] = train['time_cycles'] / train['max_cycle']
 
     # Drop constant/uninformative sensors (based on typical C-MAPSS analysis)
-    drop_sensors = ['s_1', 's_5', 's_10', 's_16', 's_18', 's_19']
+    # drop_sensors = ['s_1', 's_5', 's_10', 's_16', 's_18', 's_19']
+    drop_sensors = []
     features = [c for c in train.columns if c.startswith('s_') and c not in drop_sensors]
 
     # MinMax Scaling
@@ -184,7 +185,7 @@ def run_idssm_step(train_df, test_df, y_test, features, drift_stats, save_dir):
     dataloader = torch.utils.data.DataLoader(dataset, batch_size=64, shuffle=True)
 
     # 2.1 Model Training
-    model = idssm.models.IDSSM(num_sensors=len(features), latent_dim=8)
+    model = idssm.models.IDSSM(num_sensors=len(features), latent_dim=16)
     optimizer = optim.Adam(model.parameters(), lr=0.005)
     criterion = nn.MSELoss()
     loss_history = []
@@ -274,6 +275,15 @@ def run_idssm_step(train_df, test_df, y_test, features, drift_stats, save_dir):
             if t == len(X_seq) - 1:
                 pred_ruls.append(pred_rul_t)
                 final_unit_predictions.append((unit_id, final_true_rul, pred_rul_t))
+                
+            if unit_id % 10 == 0 and (t == 0 or t == len(X_seq) - 1):
+                visualize.plot_gat_attention_heatmap(
+                    attention_weights=attn,
+                    sensor_names=features, 
+                    save_dir=f'{save_dir}/gat_attention_heatmap', 
+                    filename=f'unit{unit_id}_timestep{t+1}',
+                    show_plot=False
+                )
 
         if (i+1) % 20 == 0:
             print(f"  Processed {i+1}/{len(test_units)} units...")
@@ -326,27 +336,8 @@ def run_full_experiment(train_path, test_path, rul_path, save_dir):
     print("Loading and Processing Data...")
     train, test, y_test, feats, lifetimes, drift = load_and_process_data(train_path, test_path, rul_path)
     
-    # Initialize result containers
-    res_msdfm = None # MSDFM results
-    res_idssm = None # IDSSM results
-
-    # 2. Run MSDFM
-    try:
-        rmse_a, ware_a, res_msdfm = run_msdfm_step(train, test, y_test, feats, lifetimes, f'{save_dir}/msdfm')
-    except Exception as e:
-        print(f"[MSDFM] Failed: {e}")
-        import traceback
-        traceback.print_exc()
-        rmse_a, ware_a = float('nan'), float('nan')
-        
-    # 3. Run IDSSM
-    try:
-        rmse_b, ware_b, res_idssm = run_idssm_step(train, test, y_test, feats, drift, f'{save_dir}/idssm')
-    except Exception as e:
-        print(f"[IDSSM] Failed: {e}")
-        import traceback
-        traceback.print_exc()
-        rmse_b, ware_b = float('nan'), float('nan')
+    rmse_b, ware_b, res_idssm = run_idssm_step(train, test, y_test, feats, drift, f'{save_dir}/idssm')
+    rmse_a, ware_a, res_msdfm = run_msdfm_step(train, test, y_test, feats, lifetimes, f'{save_dir}/msdfm')
 
     # 4. Final Comparison & Visualization
     print("\n" + "="*50)

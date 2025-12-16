@@ -24,6 +24,9 @@ class GATLayer(nn.Module):
         self.a = nn.Linear(2 * out_dim, 1, bias=False)
         self.leakyrelu = nn.LeakyReLU(0.2)
         
+        nn.init.xavier_uniform_(self.W.weight, gain=3.0)
+        nn.init.xavier_uniform_(self.a.weight, gain=3.0)
+        
     def forward(self, h):
         Batch, N, _ = h.size()
         Wh = self.W(h)
@@ -34,13 +37,20 @@ class GATLayer(nn.Module):
         alpha = F.softmax(e, dim=2)
         h_prime = torch.bmm(alpha, Wh)
         
+        # print(e.min(), e.max(), e.mean())
+        
         return h_prime, alpha
     
     
 class IDSSM(nn.Module):
-    def __init__(self, num_sensors, latent_dim=8):
+    def __init__(self, num_sensors, latent_dim=8, sensor_emb_dim=4): # [변경] sensor_emb_dim 추가
         super(IDSSM, self).__init__()
-        self.gat = GATLayer(in_dim=1, out_dim=latent_dim)
+        self.num_sensors = num_sensors
+        
+        self.sensor_embedding = nn.Embedding(num_sensors, sensor_emb_dim)
+        
+        self.gat = GATLayer(in_dim=1 + sensor_emb_dim, out_dim=latent_dim)
+        
         self.pooling = nn.Sequential(
             nn.Linear(latent_dim, 1), 
             nn.Softmax(dim=1)
@@ -52,8 +62,23 @@ class IDSSM(nn.Module):
         )
         
     def encode(self, x_sensors):
-        h = x_sensors.unsqueeze(-1)
-        h_prime, attn_weights = self.gat(h) 
+        batch_size, num_nodes = x_sensors.size()
+        device = x_sensors.device
+        
+        # [변경] 센서 인덱스 생성 (0 ~ num_sensors-1)
+        sensor_idx = torch.arange(num_nodes, device=device) # (N,)
+        
+        # [변경] 센서 임베딩 가져오기 및 배치 크기에 맞게 확장
+        # (N, emb_dim) -> (1, N, emb_dim) -> (Batch, N, emb_dim)
+        sensor_emb = self.sensor_embedding(sensor_idx).unsqueeze(0).expand(batch_size, -1, -1)
+        
+        # [변경] 입력 데이터(값)와 임베딩 결합
+        h = x_sensors.unsqueeze(-1) # (Batch, N, 1)
+        h_combined = torch.cat([h, sensor_emb], dim=-1) # (Batch, N, 1 + emb_dim)
+        
+        # GAT에는 결합된 feature를 입력으로 줌
+        h_prime, attn_weights = self.gat(h_combined) 
+        
         w = self.pooling(h_prime)
         z = torch.sum(h_prime * w, dim=1)
         return z, attn_weights 

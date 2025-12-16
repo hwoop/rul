@@ -213,9 +213,16 @@ def plot_variance_are_comparison(results_dfs, labels, save_dir=None, figsize=(12
     return fig, ax
 
 
-def plot_gat_attention_heatmap(attention_weights, sensor_names=None, save_dir=None,
-                                figsize=(12, 10), show_plot=True, cmap='viridis',
-                                title_suffix=""):
+def plot_gat_attention_heatmap(
+    attention_weights,
+    sensor_names=None,
+    save_dir=None,
+    filename='gat_attention_map',
+    figsize=(12, 10),
+    show_plot=True,
+    cmap='viridis',
+    title_suffix=""
+):
     """
     GAT (Graph Attention Network)의 Attention weights heatmap 시각화
 
@@ -267,9 +274,12 @@ def plot_gat_attention_heatmap(attention_weights, sensor_names=None, save_dir=No
                 xticklabels=sensor_names,
                 yticklabels=sensor_names,
                 cmap=cmap,
-                annot=True if n_sensors <= 16 else False,
-                fmt='.3f' if n_sensors <= 16 else None,
-                annot_kws={'size': 8} if n_sensors <= 16 else None,
+                # annot=True if n_sensors <= 16 else False,
+                # fmt='.3f' if n_sensors <= 16 else None,
+                # annot_kws={'size': 8} if n_sensors <= 16 else None,
+                annot=True,  # 항상 True로 설정
+                fmt='.3f',   # 항상 소수점 셋째 자리까지 표시
+                annot_kws={'size': 8},
                 square=True,
                 linewidths=0.5,
                 cbar_kws={'label': 'Attention Weight', 'shrink': 0.8},
@@ -280,8 +290,8 @@ def plot_gat_attention_heatmap(attention_weights, sensor_names=None, save_dir=No
     if title_suffix:
         title += f' ({title_suffix})'
     ax.set_title(title, fontsize=14, fontweight='bold', pad=20)
-    ax.set_xlabel('Target Sensor (j)', fontsize=12, fontweight='bold')
-    ax.set_ylabel('Source Sensor (i)', fontsize=12, fontweight='bold')
+    ax.set_ylabel('Target Sensor (i)', fontsize=12, fontweight='bold')
+    ax.set_xlabel('Source Sensor (j)', fontsize=12, fontweight='bold')
 
     # 틱 레이블 회전
     plt.xticks(rotation=45, ha='right')
@@ -293,7 +303,6 @@ def plot_gat_attention_heatmap(attention_weights, sensor_names=None, save_dir=No
     if save_dir:
         if not os.path.exists(save_dir):
             os.makedirs(save_dir)
-        filename = 'gat_attention_heatmap'
         if title_suffix:
             filename += f'_{title_suffix.replace(" ", "_")}'
         save_path = os.path.join(save_dir, f'{filename}.png')
