@@ -195,7 +195,7 @@ def run_idssm_step(train_df, test_df, y_test, features, drift_stats, save_dir):
     print("="*50)
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"[IDSSM] Using device: {device}")
+    print(f"[ID-SSM] Using device: {device}")
     # ================================================================
     # 2.1 데이터 준비
     # ================================================================

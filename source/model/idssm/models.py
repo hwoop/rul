@@ -65,7 +65,6 @@ class GATLayer(nn.Module):
         self.leakyrelu = nn.LeakyReLU(0.2)
         self.dropout = nn.Dropout(dropout)
         
-        # 초기화
         nn.init.xavier_uniform_(self.W.weight)
         nn.init.xavier_uniform_(self.a.weight)
         
@@ -90,7 +89,7 @@ class GATLayer(nn.Module):
         e = self.leakyrelu(self.a(Wh_concat)).squeeze(-1)  # (Batch, N, N)
         
         # Softmax normalization: α_ij = softmax(e_ij)
-        alpha = F.softmax(e, dim=2)  # (Batch, N, N)
+        alpha = F.softmax(e, dim=2) # (Batch, N, N)
         alpha = self.dropout(alpha)
         
         # Aggregation: h_i' = σ(Σ α_ij · W · h_j)
@@ -115,10 +114,14 @@ class IDSSM(nn.Module):
         self.num_sensors = num_sensors
         self.latent_dim = latent_dim
         
+        self.embedding_dim = 4
+        self.sensor_embedding = nn.Embedding(num_sensors, self.embedding_dim)
+        
         # ============================================================
         # Module 1: GAT-based Sensor Fusion (Section 2)
         # ============================================================
-        self.gat = GATLayer(in_dim=1, out_dim=latent_dim)
+        # self.gat = GATLayer(in_dim=1, out_dim=latent_dim)
+        self.gat = GATLayer(in_dim=1 + self.embedding_dim, out_dim=latent_dim)
         
         # Attention-based Readout (Section 2.3)
         # z_k = Σ β_i · h_i' where β_i = Softmax(MLP(h_i'))
@@ -158,18 +161,31 @@ class IDSSM(nn.Module):
             z: (Batch, latent_dim) - 융합 특징 벡터
             attn_weights: (Batch, N, N) - Attention weights
         """
-        # 각 센서를 노드로 표현: h_i^(0) = y_k^i
-        h = x_sensors.unsqueeze(-1)  # (Batch, N, 1)
+        batch_size, num_sensors = x_sensors.size()
+        device = x_sensors.device
         
-        # GAT Layer 통과
-        h_prime, attn_weights = self.gat(h)  # (Batch, N, latent_dim)
+        # 1. (Batch, N, 1)
+        h_val = x_sensors.unsqueeze(-1)
         
-        # Attention-based Pooling (Readout)
-        # β_i = Softmax(MLP(h_i'))
-        beta = self.pooling(h_prime)  # (Batch, N, 1)
+        # 0부터 N-1까지의 센서 인덱스 생성
+        sensor_ids = torch.arange(num_sensors, device=device)  # (N,)
         
-        # z = Σ β_i · h_i'
-        z = torch.sum(h_prime * beta, dim=1)  # (Batch, latent_dim)
+        # 임베딩 조회: (N, emb_dim)
+        h_emb = self.sensor_embedding(sensor_ids)
+        
+        # 배치 크기만큼 확장: (Batch, N, emb_dim)
+        h_emb = h_emb.unsqueeze(0).expand(batch_size, -1, -1)
+        
+        # 결합: [값, 임베딩] -> (Batch, N, 1 + emb_dim)
+        # 예: [0.5, 0.1, -0.2, 0.8, 0.0] (첫 번째는 값, 나머지는 ID)
+        h = torch.cat([h_val, h_emb], dim=-1)
+        
+        # GAT Layer 통과 (입력 차원이 5이므로 GATLayer의 W도 5xLatent가 됨)
+        h_prime, attn_weights = self.gat(h) 
+        
+        # ... (이하 코드는 기존과 동일) ...
+        beta = self.pooling(h_prime)
+        z = torch.sum(h_prime * beta, dim=1)
         
         return z, attn_weights
     
