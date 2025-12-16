@@ -122,7 +122,8 @@ class ParticleFilterRUL:
         1. z_obs로부터 가장 likely한 상태 x_obs 추정
         2. 각 파티클의 상태와 x_obs 사이의 거리로 가중치 업데이트
         """
-        z_obs_tensor = torch.FloatTensor(z_obs).unsqueeze(0)
+        device = next(model.parameters()).device
+        z_obs_tensor = torch.FloatTensor(z_obs).unsqueeze(0).to(device)
         
         with torch.no_grad():
             # MNN 역매핑으로 관측된 상태 추정
@@ -156,9 +157,10 @@ class ParticleFilterRUL:
         
         p(z_obs | x_particle) ∝ exp(-||z_obs - H(x_particle)||² / 2σ²)
         """
+        device = next(model.parameters()).device
         with torch.no_grad():
-            x_tensor = torch.FloatTensor(self.particles[:, 0]).unsqueeze(1)
-            z_pred = model.decode(x_tensor).numpy()
+            x_tensor = torch.FloatTensor(self.particles[:, 0]).unsqueeze(1).to(device)
+            z_pred = model.decode(x_tensor).cpu().numpy()
         
         # 잔차 계산
         diff = z_pred - z_obs[None, :]

@@ -194,6 +194,8 @@ def run_idssm_step(train_df, test_df, y_test, features, drift_stats, save_dir):
     print("Running ID-SSM Pipeline (Concept Document Implementation)")
     print("="*50)
     
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"[IDSSM] Using device: {device}")
     # ================================================================
     # 2.1 데이터 준비
     # ================================================================
@@ -222,7 +224,7 @@ def run_idssm_step(train_df, test_df, y_test, features, drift_stats, save_dir):
     # ================================================================
     # 2.2 모델 초기화
     # ================================================================
-    model = idssm.IDSSM(num_sensors=len(features), latent_dim=8, hidden_dim=16)
+    model = idssm.IDSSM(num_sensors=len(features), latent_dim=8, hidden_dim=16).to(device)
     
     # 컨셉 문서 Loss Function
     criterion = idssm.IDSSMLoss(lambda_mono=0.1, lambda_state=0.01)
@@ -251,6 +253,7 @@ def run_idssm_step(train_df, test_df, y_test, features, drift_stats, save_dir):
         if use_sequence_training:
             # 시퀀스 기반 학습 (단조성 Loss 포함)
             for seq_x, seq_state in seq_dataloader:
+                seq_x, seq_state = seq_x.to(device), seq_state.to(device)
                 # seq_x: (batch, seq_len, num_sensors)
                 # seq_state: (batch, seq_len)
                 
@@ -294,6 +297,7 @@ def run_idssm_step(train_df, test_df, y_test, features, drift_stats, save_dir):
         else:
             # 포인트 단위 학습 (단조성 Loss 없음)
             for bx, by in dataloader:
+                bx, by = bx.to(device), by.to(device)
                 optimizer.zero_grad()
                 z_enc, z_dec = model(bx, by)
                 
@@ -325,10 +329,13 @@ def run_idssm_step(train_df, test_df, y_test, features, drift_stats, save_dir):
     # ================================================================
     model.eval()
     with torch.no_grad():
-        z_enc_full, z_dec_full = model(X_train, state_train)
+        X_train_dev = X_train.to(device)
+        state_train_dev = state_train.to(device)
+        
+        z_enc_full, z_dec_full = model(X_train_dev, state_train_dev)
         residuals = z_enc_full - z_dec_full
     
-    err_norm = torch.norm(residuals, dim=1)
+    err_norm = torch.norm(residuals, dim=1).cpu()
     meas_noise_std = err_norm.median().item()
     meas_noise_std_robust = max(meas_noise_std, 1e-3) * 3.0  # 스케일 조정
     print(f"[ID-SSM] Estimated Measurement Noise Std: {meas_noise_std_robust:.6f}")
@@ -372,17 +379,17 @@ def run_idssm_step(train_df, test_df, y_test, features, drift_stats, save_dir):
             pf.predict(dt=1.0, sigma_B=0.001)
             
             # GAT 인코딩
-            x_obs = torch.FloatTensor(X_seq[t]).unsqueeze(0)
+            x_obs = torch.FloatTensor(X_seq[t]).unsqueeze(0).to(device)
             with torch.no_grad():
-                z_obs, attn = model.encode(x_obs)
-                z_obs_np = z_obs.numpy().flatten()
+                z_out, attn = model.encode(x_obs)
+                z_obs = z_out.cpu().numpy().flatten()
                 
                 # 마지막 유닛의 마지막 시점 attention 저장
                 if i == len(test_units) - 1 and t == len(X_seq) - 1:
                     last_attention_weights = attn
 
             # 컨셉 문서: MNN 역매핑 기반 측정 업데이트
-            pf.update_with_mnn(z_obs_np, model, use_inverse_mapping=True)
+            pf.update_with_mnn(z_obs, model, use_inverse_mapping=True)
             
             # 리샘플링
             if pf.neff() < pf.N / 2:
@@ -497,6 +504,15 @@ def run_full_experiment(train_path, test_path, rul_path, save_dir):
     res_msdfm = None
     res_idssm = None
 
+    # 3. Run ID-SSM
+    try:
+        rmse_b, ware_b, res_idssm = run_idssm_step(train, test, y_test, feats, drift, f'{save_dir}/idssm')
+    except Exception as e:
+        print(f"[ID-SSM] Failed: {e}")
+        import traceback
+        traceback.print_exc()
+        rmse_b, ware_b = float('nan'), float('nan')
+        
     # 2. Run MSDFM
     try:
         rmse_a, ware_a, res_msdfm = run_msdfm_step(train, test, y_test, feats, lifetimes, f'{save_dir}/msdfm')
@@ -506,14 +522,6 @@ def run_full_experiment(train_path, test_path, rul_path, save_dir):
         traceback.print_exc()
         rmse_a, ware_a = float('nan'), float('nan')
         
-    # 3. Run ID-SSM
-    try:
-        rmse_b, ware_b, res_idssm = run_idssm_step(train, test, y_test, feats, drift, f'{save_dir}/idssm')
-    except Exception as e:
-        print(f"[ID-SSM] Failed: {e}")
-        import traceback
-        traceback.print_exc()
-        rmse_b, ware_b = float('nan'), float('nan')
 
     # 4. Final Comparison & Visualization
     print("\n" + "="*50)
