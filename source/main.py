@@ -42,7 +42,7 @@ def load_and_process_data(train_path, test_path, rul_path):
     train['state_x'] = train['time_cycles'] / train['max_cycle']
 
     # Drop constant/uninformative sensors (based on typical C-MAPSS analysis)
-    # drop_sensors = ['s_1', 's_5', 's_10', 's_16', 's_18', 's_19']
+    drop_sensors = ['s_1', 's_5', 's_10', 's_16', 's_18', 's_19']
     drop_sensors = []
     features = [c for c in train.columns if c.startswith('s_') and c not in drop_sensors]
 
@@ -185,7 +185,7 @@ def run_idssm_step(train_df, test_df, y_test, features, drift_stats, save_dir):
     dataloader = torch.utils.data.DataLoader(dataset, batch_size=64, shuffle=True)
 
     # 2.1 Model Training
-    model = idssm.models.IDSSM(num_sensors=len(features), latent_dim=16)
+    model = idssm.models.IDSSM(num_sensors=len(features), latent_dim=32)
     optimizer = optim.Adam(model.parameters(), lr=0.005)
     criterion = nn.MSELoss()
     loss_history = []
